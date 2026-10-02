@@ -78,6 +78,7 @@ set(eviction_sources_cpp
         eviction/cpp/merlin.cpp
         eviction/cpp/LFU.cpp
         eviction/cpp/GDSF.cpp
+        eviction/cpp/GDSF_GCA.cpp
         eviction/cpp/LRU_K.cpp
         eviction/LHD/lhd.cpp
         eviction/LHD/LHD_Interface.cpp
