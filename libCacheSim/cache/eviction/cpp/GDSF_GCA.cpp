@@ -30,7 +30,7 @@ class GDSF_GCA : public abstractRank {
   int64_t bytes_admitted = 0; //전역 시간 역할
   bool learn=false; //false이면 rho 고정 (테스트용)
   double eta = 0.05, w_mem = 1.0, w_burst = 0.25, w_res = 1.0;
-  double rho_min = 0.01, rho_max = 4.0, ghost_ratio = 1.0;
+  double rho_min = 1e-6, rho_max = 4.0, ghost_ratio = 1.0;
   //eta : 학습률
 
 
@@ -75,11 +75,11 @@ static bool GDSF_GCA_remove(cache_t *cache, obj_id_t obj_id);
 // ***********************************************************************
 
 ///////////////////////////////////////////////////
-//파라미터 파싱//
+//ｐａｒａｍｅｔｅｒ ｐａｒｓｉｎｇ//
 ///////////////////////////////////////////////////
 static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
   auto *gdsf = reinterpret_cast<eviction::GDSF_GCA *>(cache->eviction_params);
-  //기본값
+  //ｉｎｉｔｉａｌ ｖａｌｕｅ
   if (params == nullptr || params[0] == '\0') return;
 
   char *params_str = strdup(params);
@@ -350,8 +350,7 @@ static bool GDSF_GCA_can_insert(cache_t *cache, const request_t *req) {
  * @brief insert an object into the cache,
  * update the hash table and cache metadata
  * this function assumes the cache has enough space
- * eviction should be
- * performed before calling this function
+ * 일단 insert하고 넘치는 부분을 evict = gdsf와 같은 동작
  *
  * @param cache
  * @param req
@@ -372,7 +371,7 @@ static cache_obj_t *GDSF_GCA_insert(cache_t *cache, const request_t *req) {
   obj->freq = 1; // resurrection 구현해야 함!!
   gdsf->bytes_admitted += obj->obj_size;
 
-  double pri = gdsf->clock + 1.0e6 / obj->obj_size;
+  double pri = gdsf->clock + 1.0e6 / obj->obj_size; //frequency=1
   eviction::pq_node_type new_node = {obj, pri, cache->n_req};
   auto r = gdsf->pq.insert(new_node);
   DEBUG_ASSERT(r.second);
