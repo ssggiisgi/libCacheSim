@@ -1,0 +1,663 @@
+<title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one reading column of lab-notebook sections — cross-trace answer first, then the rho-range decision, then per-trace detail behind trace tabs. */
+:root {
+  --page: #f6f6f3;
+  --surface: #fcfcfb;
+  --ink: #111214;
+  --ink-2: #4f5157;
+  --muted: #85868a;
+  --grid: #e3e3de;
+  --axis: #c2c2bb;
+  --line: rgba(17,18,20,0.10);
+  --other: #c9cac4;
+  --other-hover: #4f5157;
+  --s1: #2a78d6;   /* GDSF-GCA, per-cell best rho */
+  --s2: #eb6834;   /* GDSF-GCA, one fixed rho per trace */
+  --s3: #1baf7a;   /* GDSF */
+  --s4: #eda100;   /* best other algorithm at that size */
+  --better: #2a78d6;
+  --worse: #e34948;
+  --neutral: #f0efec;
+  --good-ink: #006300;
+  --bad-ink: #b42323;
+  --f-body: "IBM Plex Sans KR", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #0f1012; --surface: #1a1b1d; --ink: #f4f4f2; --ink-2: #c3c2b7; --muted: #8d8e92;
+    --grid: #2b2c2f; --axis: #3a3b3e; --line: rgba(255,255,255,0.10);
+    --other: #3d3e42; --other-hover: #c3c2b7;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --better: #3987e5; --worse: #e66767; --neutral: #2e2f31;
+    --good-ink: #2fbf2f; --bad-ink: #f08080;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page: #0f1012; --surface: #1a1b1d; --ink: #f4f4f2; --ink-2: #c3c2b7; --muted: #8d8e92;
+  --grid: #2b2c2f; --axis: #3a3b3e; --line: rgba(255,255,255,0.10);
+  --other: #3d3e42; --other-hover: #c3c2b7;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --better: #3987e5; --worse: #e66767; --neutral: #2e2f31;
+  --good-ink: #2fbf2f; --bad-ink: #f08080;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--page); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.6; }
+.wrap { max-width: 1080px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 64px; display: grid; gap: 30px; }
+header { display: grid; gap: 8px; }
+.eyebrow { font-family: var(--f-data); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+h1 { font-size: clamp(24px, 3.4vw, 32px); line-height: 1.25; margin: 0; font-weight: 700; text-wrap: balance; }
+h2 { font-size: 20px; margin: 0; font-weight: 600; text-wrap: balance; }
+h3 { font-size: 16px; margin: 0; font-weight: 600; }
+p { margin: 0; max-width: 72ch; color: var(--ink-2); }
+.meta { font-family: var(--f-data); font-size: 12.5px; color: var(--muted); }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--page); padding-block: 10px; border-bottom: 1px solid var(--line); }
+.controls .label { font-size: 13px; color: var(--muted); }
+.ctl { display: flex; gap: 8px; align-items: center; }
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg button { font: 500 13px var(--f-body); color: var(--ink-2); background: transparent; border: 0; padding: 7px 14px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.seg button:focus-visible { outline: 2px solid var(--s1); outline-offset: -2px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 4px; align-content: start; }
+.tile .k { font-size: 13px; color: var(--ink-2); }
+.tile .v { font-size: 30px; font-weight: 700; line-height: 1.2; }
+.tile .s { font-size: 13px; color: var(--muted); }
+.key { width: 14px; height: 3px; border-radius: 2px; display: inline-block; flex: none; }
+section { display: grid; gap: 12px; min-width: 0; }
+.part { border-top: 1px solid var(--axis); padding-top: 22px; display: grid; gap: 24px; }
+.figure { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; position: relative; min-width: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { font-family: var(--f-data); font-size: 11px; fill: var(--muted); }
+svg .dl { font-family: var(--f-body); font-size: 12px; font-weight: 600; fill: var(--ink); }
+svg .vl { font-family: var(--f-data); font-size: 11px; fill: var(--ink-2); }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0,0,0,0.12); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; min-width: 210px; z-index: 10; }
+.tip .h { font-weight: 600; margin-bottom: 6px; color: var(--ink); }
+.tip .r { display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: center; color: var(--ink-2); }
+.tip .r b { font-family: var(--f-data); font-weight: 500; color: var(--ink); }
+.tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 6px 10px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+th { font-weight: 500; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--axis); background: var(--surface); }
+td { font-family: var(--f-data); color: var(--ink); border-bottom: 1px solid var(--grid); }
+td.name, th.name { text-align: left; font-family: var(--f-body); position: sticky; left: 0; background: var(--surface); z-index: 1; }
+td small { display: block; font-size: 11px; color: var(--ink-2); line-height: 1.3; }
+tr.hl td.name { font-weight: 700; }
+td.best { font-weight: 600; box-shadow: inset 0 0 0 1.5px var(--ink); }
+td.cur { box-shadow: inset 0 0 0 2px var(--s2); }
+td.empty { background: var(--surface); }
+td.fail { color: var(--muted); font-family: var(--f-body); text-align: left; }
+.pos { color: var(--good-ink); }
+.neg { color: var(--bad-ink); }
+.note { font-size: 13px; color: var(--muted); }
+details { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
+details summary { cursor: pointer; font-weight: 600; }
+details ul { margin: 10px 0 0; padding-left: 20px; color: var(--ink-2); display: grid; gap: 6px; }
+code { font-family: var(--f-data); font-size: 0.92em; }
+.scale { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.scale .bar { width: 160px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, color-mix(in oklab, var(--worse) 60%, var(--neutral)), var(--neutral), color-mix(in oklab, var(--better) 60%, var(--neutral))); }
+@media (max-width: 560px) { .wrap { padding-inline: 16px; } .tile .v { font-size: 26px; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">libCacheSim · GDSF-GCA fixed-ρ sweep</div>
+    <h1 id="h1"></h1>
+    <p id="lede"></p>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <div class="controls" role="group" aria-label="보기 설정">
+    <div class="ctl"><span class="label">지표</span>
+      <div class="seg" id="seg-metric">
+        <button type="button" data-v="mr" aria-pressed="true">Miss ratio</button>
+        <button type="button" data-v="bmr" aria-pressed="false">Byte miss ratio</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section>
+    <h2>모든 trace × 캐시 크기: 최적 ρ의 GDSF-GCA vs 가장 좋은 기존 알고리즘</h2>
+    <p>각 칸은 그 조합에서 가장 좋은 고정 ρ를 쓴 GDSF-GCA가, 같은 조합에서 가장 좋은 기존 온라인 알고리즘보다 miss를 얼마나 덜 내는지입니다. 파란색은 GDSF-GCA가 더 좋고, 빨간색은 더 나쁩니다. 칸 아래 작은 글씨는 그때의 최적 ρ입니다(여러 ρ가 같은 값이면 범위로 표시).</p>
+    <div class="tablewrap"><table id="t-summary"></table></div>
+    <div class="scale"><span>GCA가 나쁨</span><span class="bar"></span><span>GCA가 좋음</span><span>· 색은 ±10%에서 가장 진함</span></div>
+  </section>
+
+  <section>
+    <h2>ρ 범위를 어디로 잡을까</h2>
+    <p>학습 중인 ρ가 [ρ_min, ρ_max] 안에서만 움직인다고 하고, 그 안에서 가장 좋은 고정 ρ를 골랐을 때의 결과입니다. 칸의 큰 숫자는 모든 trace·크기 조합 중 <b>최악의 경우</b> 가장 좋은 기존 알고리즘 대비 개선율이고, 작은 숫자는 평균입니다. 주황 테두리가 현재 코드의 기본 범위(<span id="cur-range"></span>)입니다.</p>
+    <div class="tablewrap"><table id="t-range"></table></div>
+    <p class="note">ρ=0 은 aging을 완전히 끄는 값입니다. 지금 학습 규칙은 log ρ 공간에서 움직이므로 0에는 닿을 수 없습니다. 0 행은 참고용입니다.</p>
+    <div class="figure" id="f-hist">
+      <h3>각 ρ가 최적이었던 조합 수</h3>
+      <p class="note">동점인 ρ가 여러 개면 모두 셉니다. 회색 막대는 동점 포함, 파란 막대는 그 ρ가 단독 최적이었던 경우입니다.</p>
+      <div id="c-hist"></div>
+    </div>
+  </section>
+
+  <div class="part">
+    <div class="controls" role="group" aria-label="trace 선택" style="position: static; border: 0; padding: 0;">
+      <div class="ctl"><span class="label">trace별 자세히 보기</span>
+        <div class="seg" id="seg-trace"></div>
+      </div>
+    </div>
+
+    <section>
+      <h2>캐시 크기별 곡선</h2>
+      <p>회색 선은 그 외 기존 알고리즘입니다(선에 마우스를 올리면 이름이 보입니다). 점선은 미래 요청을 아는 오프라인 기준선(Belady, BeladySize 중 낮은 값)입니다.</p>
+      <div class="figure" id="f-curve">
+        <div class="legend" id="lg-curve"></div>
+        <div id="c-curve"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>가장 좋은 기존 알고리즘 대비 차이</h2>
+      <p>막대가 위로 갈수록 GDSF-GCA가 더 좋습니다. 기준은 각 크기에서 가장 낮은 값을 낸 기존 온라인 알고리즘입니다.</p>
+      <div class="figure" id="f-gap">
+        <div class="legend" id="lg-gap"></div>
+        <div id="c-gap"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>알고리즘 순위표</h2>
+      <p>숫자는 지표 값이고, 색이 진할수록 그 크기의 1위와 가깝습니다. 테두리가 있는 칸이 1위입니다. <b>평균 순위</b>와 <b>최악 격차</b>(1위 대비 가장 크게 뒤진 비율)가 낮을수록 크기와 상관없이 안정적입니다.</p>
+      <div class="tablewrap"><table id="t-rank"></table></div>
+    </section>
+
+    <section>
+      <h2>ρ 민감도 (GDSF 대비 변화율)</h2>
+      <p>ρ=1은 GDSF와 같습니다. 파란색은 GDSF보다 좋고 빨간색은 나쁩니다. 각 열에서 가장 좋은 ρ에 테두리를 그렸습니다.</p>
+      <div class="tablewrap"><table id="t-rho"></table></div>
+    </section>
+  </div>
+
+  <details>
+    <summary>측정 방법과 해석할 때 주의할 점</summary>
+    <ul id="notes"></ul>
+  </details>
+</div>
+
+<script>
+const ROWS = __DATA__;
+const FRACS = __FRACS__;
+const CUR_RANGE = __RANGE__;  // [rho-min, rho-max] defaults in GDSF_GCA.cpp
+const $ = (id) => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs, parent) => {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+};
+const el = (tag, cls, text, parent) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+};
+const pct = (x, d = 1) => (x > 0 ? "+" : "") + x.toFixed(d) + "%";
+const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+const fracLabel = (f) => (f * 100 >= 1 ? +(f * 100).toFixed(1) : +(f * 100).toFixed(2)) + "%";
+const GCA_ORACLE = "GDSF-GCA (크기별 최적 ρ)";
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const divColor = (d, cap) => {
+  if (Math.abs(d) < 0.05) return "var(--neutral)";
+  const a = Math.round(Math.min(1, Math.abs(d) / cap) * 58);
+  return `color-mix(in oklab, ${d > 0 ? "var(--better)" : "var(--worse)"} ${a}%, var(--neutral))`;
+};
+
+// ---------- data model, per trace ----------
+const traceNames = [...new Set(ROWS.map((r) => r.trace))];
+const shortTrace = (t) => t.replace(/\.(lcs|csv|vscsi|bin|oracleGeneral).*$/i, "").replace(/\.vscsi$/, "");
+const TR = {};
+for (const name of traceNames) {
+  const rows = ROWS.filter((r) => r.trace === name);
+  const okRows = rows.filter((r) => r.status === "ok" && r.frac != null);
+  const failed = [...new Map(rows.filter((r) => r.status !== "ok").map((r) => [r.config, r.status])).entries()];
+  const sizes = [...new Map(okRows.map((r) => [r.frac, r.label])).entries()].sort((a, b) => a[0] - b[0]);
+  const S = sizes.map((s) => s[0]);
+  const configs = new Map();
+  for (const r of okRows) {
+    if (!configs.has(r.config)) configs.set(r.config, { name: r.config, algo: r.algo, offline: r.offline, v: {} });
+    configs.get(r.config).v[r.frac] = { mr: r.mr, bmr: r.bmr };
+  }
+  const all = [...configs.values()].filter((c) => S.every((s) => c.v[s]));
+  const gcaCfgs = all.filter((c) => c.algo.toLowerCase() === "gdsf-gca")
+    .sort((a, b) => parseFloat(rhoOf(a)) - parseFloat(rhoOf(b)));
+  const others = all.filter((c) => !c.offline && c.algo.toLowerCase() !== "gdsf-gca");
+  TR[name] = {
+    name, short: shortTrace(name), S, sizeLabel: Object.fromEntries(sizes), failed, gcaCfgs, others,
+    offline: all.filter((c) => c.offline),
+    gdsf: others.find((c) => c.algo.toLowerCase() === "gdsf"),
+    nreq: null,
+  };
+}
+function rhoOf(c) { return c.name.match(/rho=([^)]+)/)[1]; }
+const RHOS = [...new Set(Object.values(TR).flatMap((t) => t.gcaCfgs.map(rhoOf)))].sort((a, b) => parseFloat(a) - parseFloat(b));
+
+function model(T, m) {
+  const val = (c, s) => c.v[s][m];
+  const S = T.S;
+  const bestOther = S.map((s) => {
+    let b = null;
+    for (const c of T.others) if (!b || val(c, s) < val(b, s)) b = c;
+    return { c: b, v: b ? val(b, s) : NaN };
+  });
+  const oracle = S.map((s) => {
+    let b = null;
+    for (const c of T.gcaCfgs) if (!b || val(c, s) < val(b, s)) b = c;
+    const ties = T.gcaCfgs.filter((c) => val(c, s) <= val(b, s) + 1e-12).map(rhoOf);
+    return { c: b, v: val(b, s), rho: rhoOf(b), ties };
+  });
+  // one rho for every size of this trace: smallest mean ratio to the best other algorithm
+  let fixed = null, fixedScore = Infinity;
+  for (const c of T.gcaCfgs) {
+    const sc = mean(S.map((s, i) => val(c, s) / bestOther[i].v));
+    if (sc < fixedScore) { fixedScore = sc; fixed = c; }
+  }
+  const off = T.offline.length ? S.map((s) => Math.min(...T.offline.map((c) => val(c, s)))) : null;
+  return { T, m, val, S, bestOther, oracle, fixed, off };
+}
+const gainOf = (best, v) => (best - v) / best * 100;
+const tieLabel = (ties) => ties.length === 1 ? "ρ=" + ties[0] : `ρ=${ties[0]}–${ties[ties.length - 1]}`;
+
+// ---------- tooltip & legend ----------
+function tipFor(fig) {
+  let t = fig.querySelector(".tip");
+  if (!t) { t = el("div", "tip", null, fig); t.hidden = true; }
+  return t;
+}
+function showTip(fig, t, x, y, head, rows) {
+  t.replaceChildren();
+  el("div", "h", head, t);
+  for (const [color, name, value] of rows) {
+    const r = el("div", "r", null, t);
+    el("span", "key", null, r).style.background = color || "transparent";
+    el("span", null, name, r);
+    el("b", null, value, r);
+  }
+  t.hidden = false;
+  const fw = fig.clientWidth, tw = t.offsetWidth, th = t.offsetHeight;
+  let left = x + 16; if (left + tw > fw - 4) left = x - tw - 16; if (left < 4) left = 4;
+  let top = y - th / 2; if (top < 4) top = 4; if (top + th > fig.clientHeight - 4) top = Math.max(4, fig.clientHeight - th - 4);
+  t.style.left = left + "px"; t.style.top = top + "px";
+}
+function legend(id, items) {
+  const lg = $(id); lg.replaceChildren();
+  for (const [color, name, dashed] of items) {
+    const s = el("span", null, null, lg);
+    const k = el("span", "key", null, s);
+    if (dashed) { k.style.background = "transparent"; k.style.borderTop = "2px dashed " + color; k.style.height = "0"; }
+    else k.style.background = color;
+    el("span", null, name, s);
+  }
+}
+function niceStep(raw) {
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const f = raw / p;
+  return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p;
+}
+
+// ---------- cross-trace: tiles ----------
+function drawTiles(Ms) {
+  const tiles = $("tiles"); tiles.replaceChildren();
+  const cells = Ms.flatMap((M) => M.S.map((s, i) => ({ M, i, g: gainOf(M.bestOther[i].v, M.oracle[i].v),
+    gd: M.T.gdsf ? gainOf(M.val(M.T.gdsf, s), M.oracle[i].v) : 0 })));
+  if (!cells.length) return;
+  const wins = cells.filter((c) => c.g > 1e-9).length, ties = cells.filter((c) => Math.abs(c.g) <= 1e-9).length;
+  const worst = cells.reduce((a, b) => (b.g < a.g ? b : a));
+  const items = [
+    ["기존 최고보다 나은 조합", `${wins}/${cells.length}`, ties ? `동률 ${ties}개 포함 안 함` : "trace × 캐시 크기 조합"],
+    ["기존 최고 대비 평균", pct(mean(cells.map((c) => c.g)), 1), "최적 ρ 기준 miss 감소율"],
+    ["가장 나쁜 조합", pct(worst.g, 1), `${worst.M.T.short} · ${fracLabel(FRACS[worst.i] ?? 0)} · 기준 ${worst.M.bestOther[worst.i].c.name}`],
+    ["GDSF 대비 평균", pct(mean(cells.map((c) => c.gd)), 1), `최대 ${pct(Math.max(...cells.map((c) => c.gd)), 1)}`],
+  ];
+  for (const [k, v, s] of items) {
+    const tile = el("div", "tile", null, tiles);
+    el("div", "k", k, tile); el("div", "v", v, tile); el("div", "s", s, tile);
+  }
+}
+
+// ---------- cross-trace: summary heatmap ----------
+function drawSummary(Ms) {
+  const t = $("t-summary"); t.replaceChildren();
+  const n = Math.max(...Ms.map((M) => M.S.length));
+  const head = el("tr", null, null, el("thead", null, null, t));
+  el("th", "name", "trace  \\  캐시 크기 (working set 대비)", head);
+  for (let i = 0; i < n; i++) el("th", null, FRACS.length === n ? fracLabel(FRACS[i]) : "#" + (i + 1), head);
+  el("th", null, "평균", head); el("th", null, "최악", head);
+  const tb = el("tbody", null, null, t);
+  for (const M of Ms) {
+    const tr = el("tr", null, null, tb);
+    el("td", "name", M.T.short, tr);
+    const gs = [];
+    for (let i = 0; i < n; i++) {
+      if (i >= M.S.length) { el("td", "empty", "", tr); continue; }
+      const g = gainOf(M.bestOther[i].v, M.oracle[i].v); gs.push(g);
+      const td = el("td", null, pct(g, 1), tr);
+      el("small", null, tieLabel(M.oracle[i].ties), td);
+      td.style.background = divColor(g, 10);
+      td.title = `${M.T.short} · ${M.T.sizeLabel[M.S[i]]}\nGCA ${M.oracle[i].v.toFixed(4)} (${tieLabel(M.oracle[i].ties)})\n기존 최고 ${M.bestOther[i].c.name} ${M.bestOther[i].v.toFixed(4)}`;
+    }
+    el("td", null, pct(mean(gs), 1), tr);
+    el("td", Math.min(...gs) < 0 ? "neg" : "pos", pct(Math.min(...gs), 1), tr);
+  }
+}
+
+// ---------- cross-trace: rho range matrix ----------
+function drawRange(Ms) {
+  const t = $("t-range"); t.replaceChildren();
+  const R = RHOS;
+  const cellsFor = (lo, hi) => {
+    const out = [];
+    for (const M of Ms) M.S.forEach((s, i) => {
+      const cand = M.T.gcaCfgs.filter((c) => { const r = parseFloat(rhoOf(c)); return r >= lo - 1e-15 && r <= hi + 1e-15; });
+      if (!cand.length) return;
+      const v = Math.min(...cand.map((c) => M.val(c, s)));
+      out.push(gainOf(M.bestOther[i].v, v));
+    });
+    return out;
+  };
+  const head = el("tr", null, null, el("thead", null, null, t));
+  el("th", "name", "ρ_min  \\  ρ_max", head);
+  for (const r of R) el("th", null, r, head);
+  const tb = el("tbody", null, null, t);
+  for (let i = 0; i < R.length; i++) {
+    const tr = el("tr", null, null, tb);
+    el("td", "name", R[i], tr);
+    for (let j = 0; j < R.length; j++) {
+      if (j < i) { el("td", "empty", "", tr); continue; }
+      const gs = cellsFor(parseFloat(R[i]), parseFloat(R[j]));
+      const w = Math.min(...gs), a = mean(gs);
+      const cur = parseFloat(R[i]) === parseFloat(CUR_RANGE[0]) && parseFloat(R[j]) === parseFloat(CUR_RANGE[1]);
+      const td = el("td", cur ? "cur" : null, pct(w, 1), tr);
+      el("small", null, "평균 " + pct(a, 1), td);
+      td.style.background = divColor(w, 10);
+      td.title = `ρ ∈ [${R[i]}, ${R[j]}] · 최악 ${pct(w, 2)} · 평균 ${pct(a, 2)} · 기존 최고보다 나은 조합 ${gs.filter((g) => g > 1e-9).length}/${gs.length}`;
+    }
+  }
+}
+
+// ---------- cross-trace: which rho wins ----------
+function drawHist(Ms) {
+  const host = $("c-hist"); host.replaceChildren();
+  const fig = $("f-hist");
+  const R = RHOS, tieCnt = R.map(() => 0), soloCnt = R.map(() => 0);
+  for (const M of Ms) M.oracle.forEach((o) => {
+    for (const r of o.ties) tieCnt[R.indexOf(r)]++;
+    if (o.ties.length === 1) soloCnt[R.indexOf(o.ties[0])]++;
+  });
+  const W = 960, H = 220, ml = 40, mr = 10, mt = 18, mb = 34;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "각 ρ가 최적이었던 조합 수" }, host);
+  const hi = Math.max(1, ...tieCnt);
+  const Y = (v) => mt + (hi - v) / hi * (H - mt - mb);
+  const step = Math.max(1, niceStep(hi / 4));
+  for (let v = 0; v <= hi; v += step) {
+    svgEl("line", { x1: ml, x2: W - mr, y1: Y(v), y2: Y(v), stroke: v === 0 ? "var(--axis)" : "var(--grid)" }, svg);
+    svgEl("text", { x: ml - 8, y: Y(v) + 4, "text-anchor": "end" }, svg).textContent = v;
+  }
+  const band = (W - ml - mr) / R.length, bw = Math.min(40, band * 0.55);
+  const tip = tipFor(fig);
+  R.forEach((r, k) => {
+    const cx = ml + band * (k + 0.5), x = cx - bw / 2;
+    const bar = (v, color) => {
+      if (!v) return;
+      const top = Y(v), h = Y(0) - top, rr = Math.min(4, h, bw / 2);
+      svgEl("path", { d: `M${x},${Y(0)}V${top + rr}Q${x},${top} ${x + rr},${top}H${x + bw - rr}Q${x + bw},${top} ${x + bw},${top + rr}V${Y(0)}Z`, fill: color, "pointer-events": "none" }, svg);
+    };
+    bar(tieCnt[k], "var(--other)");
+    bar(soloCnt[k], "var(--s1)");
+    if (tieCnt[k]) svgEl("text", { x: cx, y: Y(tieCnt[k]) - 5, "text-anchor": "middle", class: "vl" }, svg).textContent = soloCnt[k] ? `${soloCnt[k]} / ${tieCnt[k]}` : tieCnt[k];
+    svgEl("text", { x: cx, y: H - mb + 18, "text-anchor": "middle" }, svg).textContent = "ρ=" + r;
+    const hit = svgEl("rect", { x: cx - band / 2, y: mt, width: band, height: H - mt - mb, fill: "transparent", tabindex: 0 }, svg);
+    const show = (px, py) => showTip(fig, tip, px, py, "ρ=" + r, [
+      [cssVar("--s1"), "단독 최적", String(soloCnt[k])], [cssVar("--other"), "동점 포함 최적", String(tieCnt[k])]]);
+    hit.addEventListener("pointermove", (ev) => { const fr = fig.getBoundingClientRect(); show(ev.clientX - fr.left, ev.clientY - fr.top); });
+    hit.addEventListener("focus", () => { const fr = fig.getBoundingClientRect(), hr = hit.getBoundingClientRect(); show(hr.left - fr.left + hr.width / 2, hr.top - fr.top + 30); });
+    hit.addEventListener("pointerleave", () => (tip.hidden = true));
+    hit.addEventListener("blur", () => (tip.hidden = true));
+  });
+}
+
+// ---------- per trace: curves ----------
+function drawCurve(M) {
+  const host = $("c-curve"); host.replaceChildren();
+  const fig = $("f-curve"); const T = M.T, S = M.S;
+  const W = 960, H = 420, ml = 56, mr = 110, mt = 14, mb = 40;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "캐시 크기별 곡선" }, host);
+  const lx = Math.log(S[0]), hx = Math.log(S[S.length - 1]);
+  const X = (s) => ml + (Math.log(s) - lx) / (hx - lx || 1) * (W - ml - mr);
+  const vals = [];
+  for (const c of [...T.others, ...T.gcaCfgs]) for (const s of S) vals.push(M.val(c, s));
+  if (M.off) vals.push(...M.off);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = (hi - lo) * 0.05; lo = Math.max(0, lo - pad); hi = Math.min(1, hi + pad);
+  const Y = (v) => mt + (hi - v) / (hi - lo) * (H - mt - mb);
+  const step = niceStep((hi - lo) / 6);
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
+    svgEl("line", { x1: ml, x2: W - mr, y1: Y(v), y2: Y(v), stroke: "var(--grid)" }, svg);
+    svgEl("text", { x: ml - 8, y: Y(v) + 4, "text-anchor": "end" }, svg).textContent = v.toFixed(step < 0.01 ? 3 : 2);
+  }
+  svgEl("line", { x1: ml, x2: W - mr, y1: H - mb, y2: H - mb, stroke: "var(--axis)" }, svg);
+  for (const s of S) {
+    svgEl("line", { x1: X(s), x2: X(s), y1: H - mb, y2: H - mb + 5, stroke: "var(--axis)" }, svg);
+    svgEl("text", { x: X(s), y: H - mb + 18, "text-anchor": "middle" }, svg).textContent = T.sizeLabel[s];
+  }
+  svgEl("text", { x: (ml + W - mr) / 2, y: H - 4, "text-anchor": "middle" }, svg).textContent = "캐시 크기 (log scale)";
+  const path = (ys) => ys.map((y, i) => (i ? "L" : "M") + X(S[i]).toFixed(1) + "," + Y(y).toFixed(1)).join("");
+
+  let hovered = null;
+  const grayLayer = svgEl("g", {}, svg);
+  for (const c of T.others) {
+    const ys = S.map((s) => M.val(c, s));
+    const p = svgEl("path", { d: path(ys), fill: "none", stroke: "var(--other)", "stroke-width": 1.5 }, grayLayer);
+    const hit = svgEl("path", { d: path(ys), fill: "none", stroke: "transparent", "stroke-width": 12, style: "cursor:pointer" }, grayLayer);
+    hit.addEventListener("pointerenter", () => { hovered = c; p.setAttribute("stroke", "var(--other-hover)"); p.setAttribute("stroke-width", 2); grayLayer.appendChild(p); grayLayer.appendChild(hit); });
+    hit.addEventListener("pointerleave", () => { if (hovered === c) hovered = null; p.setAttribute("stroke", "var(--other)"); p.setAttribute("stroke-width", 1.5); });
+  }
+  const series = [];
+  if (M.off) series.push({ id: "off", name: "오프라인 기준 (Belady)", short: "Belady", color: "--muted", ys: M.off, dash: "5 4", w: 1.5 });
+  series.push({ id: "best", name: "가장 좋은 기존 알고리즘", short: "기존 최고", color: "--s4", ys: M.bestOther.map((b) => b.v), w: 2 });
+  if (T.gdsf) series.push({ id: "gdsf", name: "GDSF", short: "GDSF", color: "--s3", ys: S.map((s) => M.val(T.gdsf, s)), w: 2 });
+  series.push({ id: "fixed", name: `GDSF-GCA (ρ=${rhoOf(M.fixed)} 고정)`, short: `GCA ρ=${rhoOf(M.fixed)}`, color: "--s2", ys: S.map((s) => M.val(M.fixed, s)), w: 2 });
+  series.push({ id: "oracle", name: GCA_ORACLE, short: "GCA 최적 ρ", color: "--s1", ys: M.oracle.map((o) => o.v), w: 2.5 });
+  for (const sr of series) {
+    const c = `var(${sr.color})`;
+    svgEl("path", { d: path(sr.ys), fill: "none", stroke: c, "stroke-width": sr.w, "stroke-dasharray": sr.dash || "none", "stroke-linejoin": "round", "pointer-events": "none" }, svg);
+    if (!sr.dash) for (let i = 0; i < S.length; i++)
+      svgEl("circle", { cx: X(S[i]), cy: Y(sr.ys[i]), r: 3.2, fill: c, stroke: "var(--surface)", "stroke-width": 1.5, "pointer-events": "none" }, svg);
+  }
+  const ends = series.map((sr) => ({ sr, y: Y(sr.ys[sr.ys.length - 1]) })).sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 15) ends[i].y = ends[i - 1].y + 15;
+  for (const e of ends) svgEl("text", { x: W - mr + 10, y: e.y + 4, class: "dl" }, svg).textContent = e.sr.short;
+  legend("lg-curve", [...series].reverse().map((sr) => [`var(${sr.color})`, sr.name, !!sr.dash]).concat([["var(--other)", "그 외 기존 알고리즘", false]]));
+
+  const cross = svgEl("line", { y1: mt, y2: H - mb, stroke: "var(--axis)", "stroke-width": 1, visibility: "hidden", "pointer-events": "none" }, svg);
+  const tip = tipFor(fig);
+  svg.addEventListener("pointermove", (ev) => {
+    const pt = svg.getBoundingClientRect();
+    const sx = (ev.clientX - pt.left) / pt.width * W;
+    if (sx < ml - 10 || sx > W - mr + 10) { cross.setAttribute("visibility", "hidden"); tip.hidden = true; return; }
+    let i = 0; for (let k = 1; k < S.length; k++) if (Math.abs(X(S[k]) - sx) < Math.abs(X(S[i]) - sx)) i = k;
+    cross.setAttribute("x1", X(S[i])); cross.setAttribute("x2", X(S[i])); cross.setAttribute("visibility", "visible");
+    const rows = [];
+    if (hovered) rows.push([cssVar("--other-hover"), hovered.name, M.val(hovered, S[i]).toFixed(4)]);
+    for (const sr of [...series].reverse()) {
+      let name = sr.name;
+      if (sr.id === "oracle") name += " · " + tieLabel(M.oracle[i].ties);
+      if (sr.id === "best") name += " · " + M.bestOther[i].c.name;
+      rows.push([cssVar(sr.color), name, sr.ys[i].toFixed(4)]);
+    }
+    const fr = fig.getBoundingClientRect();
+    showTip(fig, tip, ev.clientX - fr.left, ev.clientY - fr.top, `캐시 ${T.sizeLabel[S[i]]}`, rows);
+  });
+  svg.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); tip.hidden = true; });
+}
+
+// ---------- per trace: gap vs best other ----------
+function drawGap(M) {
+  const host = $("c-gap"); host.replaceChildren();
+  const fig = $("f-gap"); const T = M.T, S = M.S;
+  const W = 960, H = 300, ml = 56, mr = 20, mt = 16, mb = 40;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "가장 좋은 기존 알고리즘 대비 개선율" }, host);
+  const A = M.oracle.map((o, i) => gainOf(M.bestOther[i].v, o.v));
+  const B = S.map((s, i) => gainOf(M.bestOther[i].v, M.val(M.fixed, s)));
+  let lo = Math.min(0, ...A, ...B), hi = Math.max(0, ...A, ...B);
+  const span = hi - lo || 1; lo -= span * 0.08; hi += span * 0.12;
+  const Y = (v) => mt + (hi - v) / (hi - lo) * (H - mt - mb);
+  const step = niceStep((hi - lo) / 5);
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
+    svgEl("line", { x1: ml, x2: W - mr, y1: Y(v), y2: Y(v), stroke: Math.abs(v) < 1e-9 ? "var(--axis)" : "var(--grid)" }, svg);
+    svgEl("text", { x: ml - 8, y: Y(v) + 4, "text-anchor": "end" }, svg).textContent = (v > 0 ? "+" : "") + (+v.toFixed(2)) + "%";
+  }
+  const band = (W - ml - mr) / S.length, bw = Math.min(26, band * 0.3), gap = 2;
+  const tip = tipFor(fig);
+  for (let i = 0; i < S.length; i++) {
+    const cx = ml + band * (i + 0.5);
+    svgEl("text", { x: cx, y: H - mb + 18, "text-anchor": "middle" }, svg).textContent = T.sizeLabel[S[i]];
+    [[A[i], "var(--s1)", cx - bw - gap / 2], [B[i], "var(--s2)", cx + gap / 2]].forEach(([v, color, x]) => {
+      const y0 = Y(0), y1 = Y(v), h = Math.max(1, Math.abs(y1 - y0)), top = Math.min(y0, y1);
+      const r = Math.min(4, h, bw / 2);
+      const d = v >= 0
+        ? `M${x},${y0}V${top + r}Q${x},${top} ${x + r},${top}H${x + bw - r}Q${x + bw},${top} ${x + bw},${top + r}V${y0}Z`
+        : `M${x},${y0}V${top + h - r}Q${x},${top + h} ${x + r},${top + h}H${x + bw - r}Q${x + bw},${top + h} ${x + bw},${top + h - r}V${y0}Z`;
+      svgEl("path", { d, fill: color, "pointer-events": "none" }, svg);
+    });
+    const hit = svgEl("rect", { x: cx - band / 2, y: mt, width: band, height: H - mt - mb, fill: "transparent", tabindex: 0 }, svg);
+    const show = (px, py) => showTip(fig, tip, px, py, `캐시 ${T.sizeLabel[S[i]]}`, [
+      [cssVar("--s1"), `GCA 최적 ${tieLabel(M.oracle[i].ties)}`, pct(A[i], 2)],
+      [cssVar("--s2"), `GCA ρ=${rhoOf(M.fixed)} 고정`, pct(B[i], 2)],
+      [null, `기준: ${M.bestOther[i].c.name}`, M.bestOther[i].v.toFixed(4)],
+    ]);
+    hit.addEventListener("pointermove", (ev) => { const fr = fig.getBoundingClientRect(); show(ev.clientX - fr.left, ev.clientY - fr.top); });
+    hit.addEventListener("focus", () => { const fr = fig.getBoundingClientRect(), hr = hit.getBoundingClientRect(); show(hr.left - fr.left + hr.width / 2, hr.top - fr.top + 40); });
+    hit.addEventListener("pointerleave", () => (tip.hidden = true));
+    hit.addEventListener("blur", () => (tip.hidden = true));
+  }
+  legend("lg-gap", [["var(--s1)", GCA_ORACLE, false], ["var(--s2)", `GDSF-GCA (ρ=${rhoOf(M.fixed)} 고정, 이 trace의 모든 크기에 같은 ρ)`, false]]);
+}
+
+// ---------- per trace: ranking ----------
+function drawRank(M) {
+  const t = $("t-rank"); t.replaceChildren();
+  const T = M.T, S = M.S;
+  const ents = T.others.map((c) => ({ name: c.name, ys: S.map((s) => M.val(c, s)), hl: c === T.gdsf }));
+  ents.push({ name: GCA_ORACLE, ys: M.oracle.map((o) => o.v), hl: true, sub: M.oracle.map((o) => tieLabel(o.ties)) });
+  ents.push({ name: `GDSF-GCA (ρ=${rhoOf(M.fixed)} 고정)`, ys: S.map((s) => M.val(M.fixed, s)), hl: true });
+  const best = S.map((_, i) => Math.min(...ents.map((e) => e.ys[i])));
+  for (const e of ents) {
+    e.ranks = e.ys.map((v, i) => 1 + ents.filter((o) => o.ys[i] < v - 1e-12).length);
+    e.mean = mean(e.ranks);
+    e.worst = Math.max(...e.ys.map((v, i) => (v - best[i]) / best[i] * 100));
+    e.wins = e.ranks.filter((r) => r === 1).length;
+  }
+  ents.sort((a, b) => a.mean - b.mean || a.worst - b.worst);
+  const head = el("tr", null, null, el("thead", null, null, t));
+  el("th", "name", "알고리즘", head);
+  for (const s of S) el("th", null, T.sizeLabel[s], head);
+  el("th", null, "평균 순위", head); el("th", null, "1위 횟수", head); el("th", null, "최악 격차", head);
+  const tb = el("tbody", null, null, t);
+  for (const e of ents) {
+    const tr = el("tr", e.hl ? "hl" : null, null, tb);
+    const nm = el("td", "name", e.name, tr);
+    if (e.name === GCA_ORACLE) nm.style.color = "var(--s1)";
+    else if (e.name.startsWith("GDSF-GCA")) nm.style.color = "var(--s2)";
+    e.ys.forEach((v, i) => {
+      const gapPct = (v - best[i]) / best[i] * 100;
+      const strength = Math.max(0, 1 - gapPct / 15);
+      const td = el("td", e.ranks[i] === 1 ? "best" : null, v.toFixed(4), tr);
+      td.style.background = `color-mix(in oklab, var(--s1) ${Math.round(strength * 32)}%, var(--surface))`;
+      td.title = `${e.name} · ${T.sizeLabel[S[i]]} · ${e.ranks[i]}위 · 1위 대비 ${pct(gapPct, 2)}` + (e.sub ? ` · ${e.sub[i]}` : "");
+    });
+    el("td", null, e.mean.toFixed(1), tr);
+    el("td", null, `${e.wins}/${S.length}`, tr);
+    el("td", e.worst < 1 ? "pos" : e.worst > 10 ? "neg" : null, pct(e.worst, 1), tr);
+  }
+  for (const [name, status] of T.failed) {
+    const tr = el("tr", null, null, tb);
+    el("td", "name", name, tr);
+    const td = el("td", "fail", `실행 실패: ${status}`, tr); td.colSpan = S.length + 3;
+  }
+}
+
+// ---------- per trace: rho sensitivity ----------
+function drawRho(M) {
+  const t = $("t-rho"); t.replaceChildren();
+  const T = M.T, S = M.S;
+  if (!T.gdsf) return;
+  const head = el("tr", null, null, el("thead", null, null, t));
+  el("th", "name", "ρ", head);
+  for (const s of S) el("th", null, T.sizeLabel[s], head);
+  el("th", null, "평균", head);
+  const tb = el("tbody", null, null, t);
+  for (const c of T.gcaCfgs) {
+    const tr = el("tr", c === M.fixed ? "hl" : null, null, tb);
+    el("td", "name", rhoOf(c) + (c === M.fixed ? "  (이 trace의 고정 ρ)" : ""), tr);
+    const ds = S.map((s, i) => {
+      const g = M.val(T.gdsf, s), v = M.val(c, s);
+      const d = (v - g) / g * 100;
+      const td = el("td", M.oracle[i].ties.includes(rhoOf(c)) ? "best" : null, pct(d, 1), tr);
+      td.style.background = divColor(-d, 15);
+      td.title = `ρ=${rhoOf(c)} · ${T.sizeLabel[s]} · ${v.toFixed(4)} (GDSF ${g.toFixed(4)})`;
+      return d;
+    });
+    el("td", null, pct(mean(ds), 1), tr);
+  }
+}
+
+// ---------- wiring ----------
+let metric = "mr", trace = traceNames[0];
+try { metric = localStorage.getItem("gca-metric") === "bmr" ? "bmr" : "mr"; } catch (e) {}
+try { const t = localStorage.getItem("gca-trace"); if (t && TR[t]) trace = t; } catch (e) {}
+
+function setPressed(segId, v) { for (const b of $(segId).querySelectorAll("button")) b.setAttribute("aria-pressed", b.dataset.v === v); }
+function renderAll() {
+  const Ms = traceNames.map((n) => model(TR[n], metric)).filter((M) => M.S.length && M.T.gcaCfgs.length && M.T.others.length);
+  setPressed("seg-metric", metric);
+  drawTiles(Ms); drawSummary(Ms); drawRange(Ms); drawHist(Ms);
+  renderTrace();
+}
+function renderTrace() {
+  setPressed("seg-trace", trace);
+  const M = model(TR[trace], metric);
+  if (!M.S.length || !M.T.gcaCfgs.length) return;
+  drawCurve(M); drawGap(M); drawRank(M); drawRho(M);
+}
+for (const n of traceNames) {
+  const b = el("button", null, TR[n].short, $("seg-trace")); b.type = "button"; b.dataset.v = n;
+  b.addEventListener("click", () => { trace = n; try { localStorage.setItem("gca-trace", n); } catch (e) {} renderTrace(); });
+}
+for (const b of $("seg-metric").querySelectorAll("button"))
+  b.addEventListener("click", () => { metric = b.dataset.v; try { localStorage.setItem("gca-metric", metric); } catch (e) {} renderAll(); });
+
+$("h1").textContent = document.title;
+$("cur-range").textContent = `ρ_min=${CUR_RANGE[0]}, ρ_max=${CUR_RANGE[1]}`;
+const anyT = TR[traceNames[0]];
+$("lede").textContent = `GDSF-GCA의 ρ를 ${RHOS.length}개 값으로 고정해 돌리고, trace ${traceNames.length}개 × 캐시 크기 ${FRACS.length}개 조합에서 ${anyT ? anyT.others.map((c) => c.name).join(", ") : ""}와 비교했습니다. ρ 학습이 완벽하다고 가정했을 때 GDSF-GCA가 모든 조합에서 안정적으로 이기는지, 그리고 ρ 범위를 어디로 잡아야 하는지를 보기 위한 결과입니다.`;
+$("meta").textContent = `trace ${traceNames.map((n) => TR[n].short).join(", ")} · 캐시 크기 ${FRACS.map(fracLabel).join(", ")} (working set 대비) · ρ ${RHOS.join(", ")}`;
+const notes = [
+  "‘최적 ρ’는 각 trace·캐시 크기마다 결과를 보고 가장 좋은 고정 ρ를 고른 값입니다. ρ 학습이 완벽할 때 얻을 수 있는 상한선이고, 실제 학습이 그대로 달성한다는 뜻은 아닙니다. 또한 trace 안에서 워크로드가 바뀌면 시간에 따라 ρ를 바꾸는 학습이 고정 ρ보다 더 좋을 수도 있습니다.",
+  "‘ρ 고정’은 한 trace 안의 모든 캐시 크기에 같은 ρ 하나를 쓴 경우입니다. 기존 최고 알고리즘 대비 평균 비율이 가장 낮은 ρ를 지표별로 골랐습니다.",
+  "‘가장 좋은 기존 알고리즘’은 크기마다 다른 알고리즘일 수 있습니다. 하나의 기존 알고리즘이 모든 크기에서 그만큼 잘하는 것은 아니므로 GDSF-GCA에게 불리한 비교입니다.",
+  "GDSF도 기존 알고리즘에 포함됩니다. ρ=1이 GDSF와 같기 때문에, 1을 포함하는 ρ 범위에서는 GDSF-GCA가 GDSF보다 나빠질 수 없습니다.",
+  "Belady / BeladySize는 미래 요청을 아는 오프라인 알고리즘이라 순위와 ‘기존 최고’ 계산에서 빼고 기준선으로만 그렸습니다. 크기가 다른 객체에서는 BeladySize도 진짜 최적은 아닙니다.",
+  "모든 알고리즘의 파라미터는 libCacheSim 기본값입니다. 캐시 크기는 각 trace의 working set 크기(바이트) 대비 비율입니다.",
+];
+for (const n of traceNames) for (const [name, status] of TR[n].failed) notes.push(`${TR[n].short} · ${name}: ${status}`);
+for (const n of notes) el("li", null, n, $("notes"));
+renderAll();
+</script>
