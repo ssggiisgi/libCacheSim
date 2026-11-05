@@ -45,6 +45,8 @@ static const cache_algo_entry_t g_cache_algos[] = {
     {"gdsf", GDSF_init},
     {"gdsf-gca", GDSF_GCA_init},
     {"gdsfgca", GDSF_GCA_init},
+    {"gd-size", GDSize_init},
+    {"gdsize", GDSize_init},
     {"lhd", LHD_init},
     {"lecar", LeCaR_init},
     {"lecarv0", LeCaRv0_init},

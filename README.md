@@ -55,6 +55,7 @@ The name in `code` is what you pass to `cachesim` on the command line (names are
 * [FIFO-Merge](/libCacheSim/cache/eviction/FIFO_Merge.c) `fifo-merge`
 * [Belady](/libCacheSim/cache/eviction/Belady.c) `belady`, [BeladySize](/libCacheSim/cache/eviction/BeladySize.c) `beladysize` — these need future information, so they only work on oracle traces such as `oracleGeneral`
 * [GDSF](/libCacheSim/cache/eviction/cpp/GDSF.cpp) `gdsf`
+* [GD-Size](/libCacheSim/cache/eviction/cpp/GDSize.cpp) `gdsize`
 * [Hyperbolic](/libCacheSim/cache/eviction/Hyperbolic.c) `hyperbolic`
 * [LeCaR](/libCacheSim/cache/eviction/LeCaR.c) `lecar`
 * [Cacheus](/libCacheSim/cache/eviction/Cacheus.c) `cacheus`

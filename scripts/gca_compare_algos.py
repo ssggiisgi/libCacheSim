@@ -34,7 +34,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 # the comparison set for GDSF-GCA (gdsf-gca itself is added from --rhos)
-DEFAULT_ALGOS = "lru,arc,lfu,gdsf,cacheus,lecar,belady,beladySize"
+DEFAULT_ALGOS = "lru,arc,lfu,gdsf,gdsize,cacheus,lecar,belady,beladySize"
 DEFAULT_RHOS = "0,1e-6,1e-5,1e-4,1e-3,0.01,0.1,1,4,16"
 DEFAULT_BETAS = "0,0.5,1"
 OFFLINE = {"belady", "beladysize"}
