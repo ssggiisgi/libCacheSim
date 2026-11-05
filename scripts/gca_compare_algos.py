@@ -15,6 +15,11 @@ example (from the repo root):
     python3 scripts/gca_compare_algos.py \
         --trace "data/cloudPhysicsIO.vscsi.lcs|lcs" \
         --out result/compare_cloudPhysics.csv
+
+    # learned rho only, with a rho trajectory per cache size
+    python3 scripts/gca_compare_algos.py --trace "data/cloudPhysicsIO.vscsi.lcs|lcs" \
+        --algos "" --rhos "" --gca-configs "learn=1" --rho-log-dir result/rho_log \
+        --resume --out result/compare_cloudPhysics.csv
 """
 
 import argparse
@@ -78,10 +83,10 @@ def run_cachesim(args, trace, algo, eparams, sizes):
     return status, rows
 
 
-def run_one(args, trace, algo, eparams, n_sizes):
+def run_one(args, trace, algo, eparams, label):
     t0 = time.time()
     status, rows = run_cachesim(args, trace, algo, eparams, args.sizes)
-    print(f"[{status:>8}] {algo:<12} {eparams:<10} {time.time() - t0:6.1f}s", file=sys.stderr)
+    print(f"[{status:>8}] {label:<32} {time.time() - t0:6.1f}s", file=sys.stderr)
     return status, rows
 
 
@@ -91,6 +96,11 @@ def main():
     ap.add_argument("--algos", default=DEFAULT_ALGOS)
     ap.add_argument("--rhos", default=DEFAULT_RHOS, help="fixed rho values for gdsf-gca")
     ap.add_argument("--betas", default=DEFAULT_BETAS, help="beta values for gdsf-gca")
+    ap.add_argument("--gca-configs", default="",
+                    help='extra gdsf-gca configs separated by ";", e.g. "learn=1;learn=1,eta=0.1"')
+    ap.add_argument("--rho-log-dir", default="",
+                    help="write a rho trajectory (one csv per cache size) for every learn=1 config")
+    ap.add_argument("--rho-log-every", type=int, default=10000, help="requests per rho log row")
     ap.add_argument("--sizes", default="0.001,0.002,0.005,0.01,0.02,0.05,0.1,0.2,0.4")
     ap.add_argument("--ignore-obj-size", action="store_true")
     ap.add_argument("--cachesim", default="./_build/bin/cachesim")
@@ -127,6 +137,21 @@ def main():
         for r in (r.strip() for r in args.rhos.split(",") if r.strip()):
             eparams = f"rho={r}" if float(b) == 1.0 else f"rho={r},beta={b}"
             jobs.append(("gdsf-gca", eparams, f"gdsf-gca({eparams})"))
+    ##추가 gdsf-gca config (학습 등)
+    for e in (e.strip() for e in args.gca_configs.split(";") if e.strip()):
+        jobs.append(("gdsf-gca", e, f"gdsf-gca({e})"))
+    ##learn=1이면 rho 변화 기록: <dir>/<trace>__<config>_<cache bytes>.csv (label에는 넣지 않음)
+    if args.rho_log_dir:
+        os.makedirs(args.rho_log_dir, exist_ok=True)
+        tname = os.path.basename(trace["path"])
+        def with_log(job):
+            algo, e, label = job
+            if algo != "gdsf-gca" or "learn=1" not in e.replace(" ", ""):
+                return job
+            safe = re.sub(r"[^A-Za-z0-9.+-]+", "_", e)
+            prefix = os.path.join(args.rho_log_dir, f"{tname}__{safe}")
+            return (algo, f"{e},rho-log={prefix},rho-log-every={args.rho_log_every}", label)
+        jobs = [with_log(j) for j in jobs]
     done = set()
     if args.resume and os.path.exists(args.out):
         with open(args.out) as f:
@@ -143,7 +168,7 @@ def main():
 
     def run_and_write(job):
         algo, eparams, label = job
-        status, rows = run_one(args, trace, algo, eparams, n_sizes)
+        status, rows = run_one(args, trace, algo, eparams, label)
         offline = int(algo.lower() in OFFLINE)
         with lock:
             if not rows:

@@ -245,7 +245,8 @@ for (const name of traceNames) {
     configs.get(r.config).v[r.frac] = { mr: r.mr, bmr: r.bmr };
   }
   const all = [...configs.values()].filter((c) => S.every((s) => c.v[s]));
-  const gcaAll = all.filter((c) => c.algo.toLowerCase() === "gdsf-gca")
+  // fixed-rho configs only; learn=1 runs have no rho= in the label
+  const gcaAll = all.filter((c) => c.algo.toLowerCase() === "gdsf-gca" && /rho=/.test(c.name))
     .sort((a, b) => parseFloat(rhoOf(a)) - parseFloat(rhoOf(b)));
   const others = all.filter((c) => !c.offline && c.algo.toLowerCase() !== "gdsf-gca");
   TR[name] = {
