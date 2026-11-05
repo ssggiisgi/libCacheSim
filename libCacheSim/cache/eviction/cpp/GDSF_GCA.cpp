@@ -3,6 +3,8 @@
 #include <cassert>
 #include <list>
 #include <algorithm>
+#include <cstdio>
+#include <string>
 #include "abstractRank.hpp"
 
 namespace eviction {
@@ -43,6 +45,13 @@ class GDSF_GCA : public abstractRank {
   std::unordered_map<obj_id_t, std::pair<ghost_entry, std::list<obj_id_t>::iterator>> ghost_map;
   int64_t ghost_bytes = 0;
   int64_t ghost_capacity = 0; // cache_size*ghost_ratio
+
+  //rho log (rho-log=<path prefix>): cache 크기마다 csv 하나, rho-log-every 요청마다 한 줄
+  std::string rho_log_prefix;
+  int64_t rho_log_every = 100000;
+  FILE *rho_log = nullptr;
+  //구간 통계: 요청, miss, ghost hit, rho를 올린/내린 횟수
+  int64_t win_req = 0, win_miss = 0, win_ghost_hit = 0, win_up = 0, win_down = 0;
   };
 }
 ////////////////////////////////////// namespace eviction
@@ -105,6 +114,8 @@ static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
     else if (strcasecmp(key, "rho-max") == 0)     gdsf->rho_max = strtod(value, nullptr);
     else if (strcasecmp(key, "ghost-ratio") == 0) gdsf->ghost_ratio = strtod(value, nullptr);
     else if (strcasecmp(key, "beta") ==0)         gdsf->beta = strtod(value, nullptr);
+    else if (strcasecmp(key, "rho-log") == 0)     gdsf->rho_log_prefix = value;
+    else if (strcasecmp(key, "rho-log-every") == 0) gdsf->rho_log_every = atoll(value);
     else ERROR("GDSF_GCA does not have parameter %s\n", key);
     }
   free(to_free);
@@ -122,6 +133,8 @@ static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
     ERROR("GDSF_GCA: invalid eta / w-mem / w-burst / ghost-ratio\n");
   if (gdsf->beta <0)
     ERROR("GDSF_GCA: beta must be >= 0\n");
+  if (gdsf->rho_log_every <= 0)
+    ERROR("GDSF_GCA: rho-log-every must be > 0\n");
 }
 /////////////////////////////////////////////////
 
@@ -159,6 +172,17 @@ static inline double gca_value(const eviction::GDSF_GCA *g, int64_t freq, int64_
   if (g->beta == 0.0) return (double)freq * 1.0e6;  //BHR
   return (double)freq * 1.0e6 / pow((double)size, g->beta);
 }
+//////////////////////////////
+//rho log: 구간 통계 한 줄 쓰고 초기화
+//////////////////////////////
+static void rho_log_flush(eviction::GDSF_GCA *g, int64_t n_req){
+  if (g->rho_log == nullptr || g->win_req == 0) return;
+  double rho = g->learn ? exp(g->log_rho) : g->rho;
+  fprintf(g->rho_log, "%lld,%.6g,%.6f,%lld,%lld,%lld\n", (long long)n_req, rho,
+          (double)g->win_miss / g->win_req, (long long)g->win_ghost_hit,
+          (long long)g->win_up, (long long)g->win_down);
+  g->win_req = g->win_miss = g->win_ghost_hit = g->win_up = g->win_down = 0;
+}
 //////////////////////////////////////////////////
 
 /**
@@ -178,6 +202,12 @@ cache_t *GDSF_GCA_init(const common_cache_params_t ccache_params,
 
   gdsf->log_rho = log(gdsf->rho);
   gdsf->ghost_capacity = (int64_t)(ccache_params.cache_size * gdsf->ghost_ratio);
+  if (!gdsf->rho_log_prefix.empty()) {
+    std::string path = gdsf->rho_log_prefix + "_" + std::to_string(ccache_params.cache_size) + ".csv";
+    gdsf->rho_log = fopen(path.c_str(), "w");
+    if (gdsf->rho_log == nullptr) ERROR("GDSF_GCA: cannot open rho log %s\n", path.c_str());
+    fprintf(gdsf->rho_log, "n_req,rho,miss_ratio,ghost_hits,rho_up,rho_down\n");
+  }
   cache->cache_init = GDSF_GCA_init;
   cache->cache_free = GDSF_GCA_free;
   cache->get = GDSF_GCA_get;
@@ -204,7 +234,12 @@ cache_t *GDSF_GCA_init(const common_cache_params_t ccache_params,
  * @param cache
  */
 static void GDSF_GCA_free(cache_t *cache) {
-  delete reinterpret_cast<eviction::GDSF_GCA *>(cache->eviction_params);
+  auto *gdsf = reinterpret_cast<eviction::GDSF_GCA *>(cache->eviction_params);
+  if (gdsf->rho_log != nullptr) {
+    rho_log_flush(gdsf, cache->n_req);  //마지막 구간
+    fclose(gdsf->rho_log);
+  }
+  delete gdsf;
   cache_struct_free(cache);
 }
 
@@ -231,6 +266,8 @@ static bool GDSF_GCA_get(cache_t *cache, const request_t *req) {
   auto *gdsf = reinterpret_cast<eviction::GDSF_GCA *>(cache->eviction_params);
   cache_obj_t *obj = cache->find(cache, req, true);
   bool hit = (obj != NULL);
+  gdsf->win_req++;
+  if (!hit) gdsf->win_miss++;
 
   //cache miss
   if (!hit && cache->can_insert(cache, req)) {
@@ -239,12 +276,14 @@ static bool GDSF_GCA_get(cache_t *cache, const request_t *req) {
      //ghost에서 발견됨 -> rho 업데이트
     if (it != gdsf->ghost_map.end()){
       const eviction::ghost_entry &e = it->second.first;
+      gdsf->win_ghost_hit++;
       double turns = (double)(gdsf->bytes_admitted - e.bytes_admitted_at_evict)/ cache->cache_size;
       if (gdsf->learn){
         double s = std::min(1.0, std::max(0.0, e.slack_norm));
         double g = 2.0 * s -1.0; //s가 0이면 -1(aging 늦추기), s가 1이면 1(aging 강하게)
         double w = exp(-turns / gdsf->w_mem); //금방 재요청된건지 아닌지 표현
         if (g>0) g *= exp(-turns / gdsf->w_burst); //g>0일때 한참 뒤에 재요청된 item의 영향 작게
+        if (g > 0) gdsf->win_up++; else if (g < 0) gdsf->win_down++;
         gdsf->log_rho += gdsf->eta *w *g;
         gdsf->log_rho = std::clamp(gdsf->log_rho, log(gdsf->rho_min), log(gdsf->rho_max));
       }
@@ -268,6 +307,9 @@ static bool GDSF_GCA_get(cache_t *cache, const request_t *req) {
       gdsf->clock = gdsf->clock_base + rho * delta; //clock update
     }
   }
+
+  if (gdsf->rho_log != nullptr && cache->n_req % gdsf->rho_log_every == 0)
+    rho_log_flush(gdsf, cache->n_req);
 
   DEBUG_ASSERT((int64_t)gdsf->pq.size() == cache->n_obj);
   DEBUG_ASSERT((int64_t)gdsf->pq_map.size() == cache->n_obj);
