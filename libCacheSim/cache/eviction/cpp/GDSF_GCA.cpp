@@ -29,9 +29,13 @@ class GDSF_GCA : public abstractRank {
   double log_rho = 0.0;
   int64_t bytes_admitted = 0; //전역 시간 역할
   bool learn=false; //false이면 rho 고정 (테스트용)
-  double eta = 0.05, w_mem = 1.0, w_burst = 0.25, w_res = 1.0;
-  double rho_min = 1e-6, rho_max = 4.0, ghost_ratio = 1.0;
   //eta : 학습률
+  //beta : V(o) 계산에 size(o) 영향 정도 조정
+  //       V(o) = freq(o) * c / size(o)^beta
+  double eta = 0.05, w_mem = 1.0, w_burst = 0.25, w_res = 1.0;
+  double beta = 1.0; // V(o) = freq * c / size^beta (1: OHR, 0: BHR)
+  double rho_min = 1e-6, rho_max = 4.0, ghost_ratio = 1.0;
+
 
 
   //ghost list
@@ -100,6 +104,7 @@ static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
     else if (strcasecmp(key, "rho-min") == 0)     gdsf->rho_min = strtod(value, nullptr);
     else if (strcasecmp(key, "rho-max") == 0)     gdsf->rho_max = strtod(value, nullptr);
     else if (strcasecmp(key, "ghost-ratio") == 0) gdsf->ghost_ratio = strtod(value, nullptr);
+    else if (strcasecmp(key, "beta") ==0)         gdsf->beta = strtod(value, nullptr);
     else ERROR("GDSF_GCA does not have parameter %s\n", key);
     }
   free(to_free);
@@ -115,6 +120,8 @@ static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
   }
   if (gdsf->eta < 0 || gdsf->w_mem <= 0 || gdsf->w_burst <= 0 || gdsf->ghost_ratio < 0)
     ERROR("GDSF_GCA: invalid eta / w-mem / w-burst / ghost-ratio\n");
+  if (gdsf->beta <0)
+    ERROR("GDSF_GCA: beta must be >= 0\n");
 }
 /////////////////////////////////////////////////
 
@@ -142,6 +149,15 @@ static void ghost_insert(eviction::GDSF_GCA *g, obj_id_t id, const eviction::gho
   while (g->ghost_bytes > g->ghost_capacity && !g->ghost_lru.empty()){
     ghost_erase(g, g->ghost_map.find(g->ghost_lru.back()));
   }
+}
+
+////////////////////////////////
+//gca_value V(o) 
+////////////////////////////////
+static inline double gca_value(const eviction::GDSF_GCA *g, int64_t freq, int64_t size){
+  if (g->beta == 1.0) return (double)freq * 1.0e6 / size; //OHR
+  if (g->beta == 0.0) return (double)freq * 1.0e6;  //BHR
+  return (double)freq * 1.0e6 / pow((double)size, g->beta);
 }
 //////////////////////////////////////////////////
 
@@ -289,7 +305,7 @@ static cache_obj_t *GDSF_GCA_find(cache_t *cache, const request_t *req,
     gdsf->pq.erase(node);
 
     double pri =
-        gdsf->clock + (double)(obj->freq) * 1.0e6 / obj->obj_size;
+        gdsf->clock + gca_value(gdsf, obj->freq, obj->obj_size);
     eviction::pq_node_type new_node = {obj, pri, cache->n_req};
     gdsf->pq.insert(new_node);
     gdsf->pq_map[obj] = new_node;
@@ -310,7 +326,7 @@ static bool GDSF_GCA_can_insert(cache_t *cache, const request_t *req) {
 
   int64_t to_evict_size =
       req->obj_size - (cache->cache_size - cache->get_occupied_byte(cache));
-  double pri = gdsf->clock + 1.0e6 / req->obj_size;
+  double pri = gdsf->clock + gca_value(gdsf, 1, req->obj_size); //넣을 object의 pri
   bool can_insert = true;
   auto iter = gdsf->pq.begin();
 
@@ -371,7 +387,7 @@ static cache_obj_t *GDSF_GCA_insert(cache_t *cache, const request_t *req) {
   obj->freq = 1; // resurrection 구현해야 함!!
   gdsf->bytes_admitted += obj->obj_size;
 
-  double pri = gdsf->clock + 1.0e6 / obj->obj_size; //frequency=1
+  double pri = gdsf->clock + gca_value(gdsf, obj->freq, obj->obj_size); //frequency=1
   eviction::pq_node_type new_node = {obj, pri, cache->n_req};
   auto r = gdsf->pq.insert(new_node);
   DEBUG_ASSERT(r.second);
@@ -414,7 +430,7 @@ static void GDSF_GCA_evict(cache_t *cache, const request_t *req) {
   }
   gdsf->n_evicted_in_epi ++ ;
 
-  double V = (double)p.obj->freq * 1.0e6 / p.obj->obj_size;
+  double V = gca_value(gdsf, p.obj->freq, p.obj->obj_size);
   //(p.priority - gdsf->clock_base) = V(p) − (그 뒤로 clock이 오른 양)
   double slack = (p.priority - gdsf->clock_base)/ (V+1e-12);
   ghost_insert(gdsf, p.obj->obj_id,
