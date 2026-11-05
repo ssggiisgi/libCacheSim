@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 # the comparison set for GDSF-GCA (gdsf-gca itself is added from --rhos)
 DEFAULT_ALGOS = "lru,arc,lfu,gdsf,cacheus,lecar,belady,beladySize"
 DEFAULT_RHOS = "0,1e-6,1e-5,1e-4,1e-3,0.01,0.1,1,4,16"
+DEFAULT_BETAS = "0,0.5,1"
 OFFLINE = {"belady", "beladysize"}
 
 # <trace> <ALGO-NAME> cache size <label>, <n> req, miss ratio <mr>, byte miss ratio <bmr>
@@ -89,6 +90,7 @@ def main():
     ap.add_argument("--trace", required=True, help='"PATH|TYPE" or "PATH|TYPE|TRACE_PARAMS"')
     ap.add_argument("--algos", default=DEFAULT_ALGOS)
     ap.add_argument("--rhos", default=DEFAULT_RHOS, help="fixed rho values for gdsf-gca")
+    ap.add_argument("--betas", default=DEFAULT_BETAS, help="beta values for gdsf-gca")
     ap.add_argument("--sizes", default="0.001,0.002,0.005,0.01,0.02,0.05,0.1,0.2,0.4")
     ap.add_argument("--ignore-obj-size", action="store_true")
     ap.add_argument("--cachesim", default="./_build/bin/cachesim")
@@ -110,13 +112,21 @@ def main():
     args.hashpower_for = {k.strip().lower(): int(v) for k, v in
                           (kv.split("=") for kv in args.hashpower_for.split(",") if kv.strip())}
 
+    #job 생성
+    ## trace
     trace = parse_trace_arg(args.trace)
-    n_sizes = len(args.sizes.split(","))
+    ## 알고리즘 추가
     jobs = [(a.strip(), "", a.strip()) for a in args.algos.split(",") if a.strip()]
-    jobs += [("gdsf-gca", f"rho={r.strip()}", f"gdsf-gca(rho={r.strip()})") for r in args.rhos.split(",") if r.strip()]
-
     header = ["trace", "algo", "config", "offline", "status", "cache_size",
               "size_frac", "miss_ratio", "byte_miss_ratio"]
+    ##캐시 크기 별로
+    n_sizes = len(args.sizes.split(","))
+    ##베타 크기 * rho 별로
+    betas = [b.strip() for b in args.betas.split(",") if b.strip()]
+    for b in betas:
+        for r in (r.strip() for r in args.rhos.split(",") if r.strip()):
+            eparams = f"rho={r}" if float(b) == 1.0 else f"rho={r},beta={b}"
+            jobs.append(("gdsf-gca", eparams, f"gdsf-gca({eparams})"))
     done = set()
     if args.resume and os.path.exists(args.out):
         with open(args.out) as f:
