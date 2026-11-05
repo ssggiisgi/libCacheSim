@@ -52,6 +52,8 @@ class GDSF_GCA : public abstractRank {
   FILE *rho_log = nullptr;
   //구간 통계: 요청, miss, ghost hit, rho를 올린/내린 횟수
   int64_t win_req = 0, win_miss = 0, win_ghost_hit = 0, win_up = 0, win_down = 0;
+  //구간 신호 크기의 합 (eta 곱하기 전, w*g): 올림은 w_burst 감쇠 후/전, 내림은 절댓값
+  double win_up_sum = 0, win_up_sum_raw = 0, win_down_sum = 0;
   };
 }
 ////////////////////////////////////// namespace eviction
@@ -178,10 +180,12 @@ static inline double gca_value(const eviction::GDSF_GCA *g, int64_t freq, int64_
 static void rho_log_flush(eviction::GDSF_GCA *g, int64_t n_req){
   if (g->rho_log == nullptr || g->win_req == 0) return;
   double rho = g->learn ? exp(g->log_rho) : g->rho;
-  fprintf(g->rho_log, "%lld,%.6g,%.6f,%lld,%lld,%lld\n", (long long)n_req, rho,
+  fprintf(g->rho_log, "%lld,%.6g,%.6f,%lld,%lld,%lld,%.6g,%.6g,%.6g\n", (long long)n_req, rho,
           (double)g->win_miss / g->win_req, (long long)g->win_ghost_hit,
-          (long long)g->win_up, (long long)g->win_down);
+          (long long)g->win_up, (long long)g->win_down,
+          g->win_up_sum, g->win_up_sum_raw, g->win_down_sum);
   g->win_req = g->win_miss = g->win_ghost_hit = g->win_up = g->win_down = 0;
+  g->win_up_sum = g->win_up_sum_raw = g->win_down_sum = 0;
 }
 //////////////////////////////////////////////////
 
@@ -206,7 +210,7 @@ cache_t *GDSF_GCA_init(const common_cache_params_t ccache_params,
     std::string path = gdsf->rho_log_prefix + "_" + std::to_string(ccache_params.cache_size) + ".csv";
     gdsf->rho_log = fopen(path.c_str(), "w");
     if (gdsf->rho_log == nullptr) ERROR("GDSF_GCA: cannot open rho log %s\n", path.c_str());
-    fprintf(gdsf->rho_log, "n_req,rho,miss_ratio,ghost_hits,rho_up,rho_down\n");
+    fprintf(gdsf->rho_log, "n_req,rho,miss_ratio,ghost_hits,rho_up,rho_down,up_sum,up_sum_raw,down_sum\n");
   }
   cache->cache_init = GDSF_GCA_init;
   cache->cache_free = GDSF_GCA_free;
@@ -282,8 +286,10 @@ static bool GDSF_GCA_get(cache_t *cache, const request_t *req) {
         double s = std::min(1.0, std::max(0.0, e.slack_norm));
         double g = 2.0 * s -1.0; //s가 0이면 -1(aging 늦추기), s가 1이면 1(aging 강하게)
         double w = exp(-turns / gdsf->w_mem); //금방 재요청된건지 아닌지 표현
+        if (g > 0) gdsf->win_up_sum_raw += w * g;
         if (g>0) g *= exp(-turns / gdsf->w_burst); //g>0일때 한참 뒤에 재요청된 item의 영향 작게
-        if (g > 0) gdsf->win_up++; else if (g < 0) gdsf->win_down++;
+        if (g > 0) { gdsf->win_up++; gdsf->win_up_sum += w * g; }
+        else if (g < 0) { gdsf->win_down++; gdsf->win_down_sum -= w * g; }
         gdsf->log_rho += gdsf->eta *w *g;
         gdsf->log_rho = std::clamp(gdsf->log_rho, log(gdsf->rho_min), log(gdsf->rho_max));
       }
