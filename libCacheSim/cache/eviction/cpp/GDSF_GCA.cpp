@@ -15,6 +15,7 @@ struct ghost_entry {
   double slack_norm;
   int64_t bytes_admitted_at_evict;
   int64_t obj_size;
+  int64_t fr_evict;  //축출될 때의 freq (resurrection용, 식 14)
 };
 
 class GDSF_GCA : public abstractRank {
@@ -45,6 +46,11 @@ class GDSF_GCA : public abstractRank {
   double lat_alpha = 46.73;  //ms, 요청당 고정 지연
   double lat_beta = 12.30;   //ms/MiB, 전송 지연
   double rho_min = 1e-6, rho_max = 4.0, ghost_ratio = 1.0;
+
+  //resurrection (식 14): ghost hit으로 다시 들어오는 object의 freq를 감쇠해서 복원
+  //  freq0 = round(1 + exp(-turns / w_res) * fr_evict), 기본값 끔, learn과 독립
+  bool resurrect = false;
+  int64_t pending_freq0 = 1;  //get()의 ghost hit에서 계산, 바로 다음 insert()에서 사용 후 1로 되돌림
 
 
 
@@ -125,6 +131,8 @@ static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
     else if (strcasecmp(key, "eta") == 0)         gdsf->eta = strtod(value, nullptr);
     else if (strcasecmp(key, "w-mem") == 0)       gdsf->w_mem = strtod(value, nullptr);
     else if (strcasecmp(key, "w-burst") == 0)     gdsf->w_burst = strtod(value, nullptr);
+    else if (strcasecmp(key, "w-res") == 0)       gdsf->w_res = strtod(value, nullptr);
+    else if (strcasecmp(key, "resurrect") == 0)   gdsf->resurrect = (atoi(value) != 0);
     else if (strcasecmp(key, "rho-min") == 0)     gdsf->rho_min = strtod(value, nullptr);
     else if (strcasecmp(key, "rho-max") == 0)     gdsf->rho_max = strtod(value, nullptr);
     else if (strcasecmp(key, "ghost-ratio") == 0) gdsf->ghost_ratio = strtod(value, nullptr);
@@ -157,6 +165,8 @@ static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
   }
   if (gdsf->eta < 0 || gdsf->w_mem <= 0 || gdsf->w_burst <= 0 || gdsf->ghost_ratio < 0)
     ERROR("GDSF_GCA: invalid eta / w-mem / w-burst / ghost-ratio\n");
+  if (gdsf->w_res <= 0)
+    ERROR("GDSF_GCA: w-res must be > 0\n");
   if (gdsf->gamma < 0)
     ERROR("GDSF_GCA: gamma must be >= 0\n");
   if (gdsf->lat_alpha < 0 || gdsf->lat_beta < 0 || gdsf->lat_alpha + gdsf->lat_beta <= 0)
@@ -369,6 +379,10 @@ static bool GDSF_GCA_get(cache_t *cache, const request_t *req) {
         event_log_write(gdsf, "ghost_hit", req->obj_id, e.obj_size, -1, EV_NA, EV_NA, EV_NA,
                         e.slack_norm, turns, EV_NA, EV_NA, EV_NA, EV_NA, 0.0, gdsf->rho, EV_NA, 0);
       }
+      //resurrection: 금방 돌아올수록 축출 당시 freq를 많이 돌려줌 (식 14, 반올림)
+      if (gdsf->resurrect)
+        gdsf->pending_freq0 = std::max<int64_t>(
+            1, llround(1.0 + exp(-turns / gdsf->w_res) * (double)e.fr_evict));
       ghost_erase(gdsf,it);
     }
     cache->insert(cache, req);
@@ -519,10 +533,11 @@ static cache_obj_t *GDSF_GCA_insert(cache_t *cache, const request_t *req) {
 
   cache_obj_t *obj = cache_insert_base(cache, req);
   DEBUG_ASSERT(obj != nullptr);
-  obj->freq = 1; // resurrection 구현해야 함!!
+  obj->freq = gdsf->pending_freq0;  //보통 1, resurrect=1이고 ghost hit이었으면 freq0
+  gdsf->pending_freq0 = 1;
   gdsf->bytes_admitted += obj->obj_size;
 
-  double pri = gdsf->clock + gca_value(gdsf, obj->freq, obj->obj_size); //frequency=1
+  double pri = gdsf->clock + gca_value(gdsf, obj->freq, obj->obj_size);
   eviction::pq_node_type new_node = {obj, pri, cache->n_req};
   auto r = gdsf->pq.insert(new_node);
   DEBUG_ASSERT(r.second);
@@ -576,7 +591,7 @@ static void GDSF_GCA_evict(cache_t *cache, const request_t *req) {
                   gdsf->clock_base, V, slack, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA,
                   EV_NA, -1);
   ghost_insert(gdsf, p.obj->obj_id,
-             {slack, gdsf->bytes_admitted, p.obj->obj_size});
+             {slack, gdsf->bytes_admitted, p.obj->obj_size, p.obj->freq});
 
   cache_remove_obj_base(cache, p.obj, true); //cache에서 삭제
 }
