@@ -3,6 +3,7 @@
 #include <cassert>
 #include <list>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include "abstractRank.hpp"
@@ -54,6 +55,11 @@ class GDSF_GCA : public abstractRank {
   int64_t win_req = 0, win_miss = 0, win_ghost_hit = 0, win_up = 0, win_down = 0;
   //구간 신호 크기의 합 (eta 곱하기 전, w*g): 올림은 w_burst 감쇠 후/전, 내림은 절댓값
   double win_up_sum = 0, win_up_sum_raw = 0, win_down_sum = 0;
+
+  //event log (event-log=<path prefix>): 사건마다 한 줄, 단위 테스트용 (구현 검증용)
+  std::string event_log_prefix;
+  FILE *event_log = nullptr;
+  int64_t cur_req = 0;  //지금 처리 중인 요청 번호 (ghost에서 밀려날 때 기록용)
   };
 }
 ////////////////////////////////////// namespace eviction
@@ -118,6 +124,7 @@ static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
     else if (strcasecmp(key, "beta") ==0)         gdsf->beta = strtod(value, nullptr);
     else if (strcasecmp(key, "rho-log") == 0)     gdsf->rho_log_prefix = value;
     else if (strcasecmp(key, "rho-log-every") == 0) gdsf->rho_log_every = atoll(value);
+    else if (strcasecmp(key, "event-log") == 0)   gdsf->event_log_prefix = value;
     else ERROR("GDSF_GCA does not have parameter %s\n", key);
     }
   free(to_free);
@@ -150,6 +157,30 @@ static void ghost_erase(eviction::GDSF_GCA *g, decltype(g->ghost_map)::iterator 
 }
 
 //////////////////////////////
+//event log: 한 사건을 한 줄로 기록 (해당 없는 칸은 비움)
+//  n_req,event,obj_id,obj_size,freq,key,clock_base,value,slack,turns,s,g_raw,w,g,dlog_rho,rho,clock,clamped
+//////////////////////////////
+#define EV_NA NAN
+static void event_log_write(eviction::GDSF_GCA *g, const char *event, int64_t obj_id,
+                            int64_t obj_size, int64_t freq, double key, double clock_base,
+                            double value, double slack, double turns, double s, double g_raw,
+                            double w, double g_final, double dlog_rho, double rho, double clock,
+                            int clamped) {
+  if (g->event_log == nullptr) return;
+  auto f = [&](double x) {
+    if (std::isnan(x)) fputs(",", g->event_log);
+    else fprintf(g->event_log, ",%.17g", x);
+  };
+  fprintf(g->event_log, "%lld,%s", (long long)g->cur_req, event);
+  if (obj_id >= 0) fprintf(g->event_log, ",%lld", (long long)obj_id); else fputs(",", g->event_log);
+  if (obj_size >= 0) fprintf(g->event_log, ",%lld", (long long)obj_size); else fputs(",", g->event_log);
+  if (freq >= 0) fprintf(g->event_log, ",%lld", (long long)freq); else fputs(",", g->event_log);
+  f(key); f(clock_base); f(value); f(slack); f(turns); f(s); f(g_raw); f(w); f(g_final);
+  f(dlog_rho); f(rho); f(clock);
+  if (clamped >= 0) fprintf(g->event_log, ",%d\n", clamped); else fputs(",\n", g->event_log);
+}
+
+//////////////////////////////
 //ghost insert
 //////////////////////////////
 static void ghost_insert(eviction::GDSF_GCA *g, obj_id_t id, const eviction::ghost_entry &e){
@@ -162,7 +193,11 @@ static void ghost_insert(eviction::GDSF_GCA *g, obj_id_t id, const eviction::gho
   g->ghost_bytes += e.obj_size;
   //ghost list 넘치면 축출
   while (g->ghost_bytes > g->ghost_capacity && !g->ghost_lru.empty()){
-    ghost_erase(g, g->ghost_map.find(g->ghost_lru.back()));
+    auto victim = g->ghost_map.find(g->ghost_lru.back());
+    event_log_write(g, "ghost_drop", victim->first, victim->second.first.obj_size, -1,
+                    EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA,
+                    EV_NA, EV_NA, -1);
+    ghost_erase(g, victim);
   }
 }
 
@@ -212,6 +247,13 @@ cache_t *GDSF_GCA_init(const common_cache_params_t ccache_params,
     if (gdsf->rho_log == nullptr) ERROR("GDSF_GCA: cannot open rho log %s\n", path.c_str());
     fprintf(gdsf->rho_log, "n_req,rho,miss_ratio,ghost_hits,rho_up,rho_down,up_sum,up_sum_raw,down_sum\n");
   }
+  if (!gdsf->event_log_prefix.empty()) {
+    std::string path = gdsf->event_log_prefix + "_" + std::to_string(ccache_params.cache_size) + ".csv";
+    gdsf->event_log = fopen(path.c_str(), "w");
+    if (gdsf->event_log == nullptr) ERROR("GDSF_GCA: cannot open event log %s\n", path.c_str());
+    fprintf(gdsf->event_log, "n_req,event,obj_id,obj_size,freq,key,clock_base,value,slack,"
+            "turns,s,g_raw,w,g,dlog_rho,rho,clock,clamped\n");
+  }
   cache->cache_init = GDSF_GCA_init;
   cache->cache_free = GDSF_GCA_free;
   cache->get = GDSF_GCA_get;
@@ -243,6 +285,7 @@ static void GDSF_GCA_free(cache_t *cache) {
     rho_log_flush(gdsf, cache->n_req);  //마지막 구간
     fclose(gdsf->rho_log);
   }
+  if (gdsf->event_log != nullptr) fclose(gdsf->event_log);
   delete gdsf;
   cache_struct_free(cache);
 }
@@ -270,6 +313,7 @@ static bool GDSF_GCA_get(cache_t *cache, const request_t *req) {
   auto *gdsf = reinterpret_cast<eviction::GDSF_GCA *>(cache->eviction_params);
   cache_obj_t *obj = cache->find(cache, req, true);
   bool hit = (obj != NULL);
+  gdsf->cur_req = cache->n_req;
   gdsf->win_req++;
   if (!hit) gdsf->win_miss++;
 
@@ -285,13 +329,22 @@ static bool GDSF_GCA_get(cache_t *cache, const request_t *req) {
       if (gdsf->learn){
         double s = std::min(1.0, std::max(0.0, e.slack_norm));
         double g = 2.0 * s -1.0; //s가 0이면 -1(aging 늦추기), s가 1이면 1(aging 강하게)
+        double g_raw = g;
         double w = exp(-turns / gdsf->w_mem); //금방 재요청된건지 아닌지 표현
         if (g > 0) gdsf->win_up_sum_raw += w * g;
         if (g>0) g *= exp(-turns / gdsf->w_burst); //g>0일때 한참 뒤에 재요청된 item의 영향 작게
         if (g > 0) { gdsf->win_up++; gdsf->win_up_sum += w * g; }
         else if (g < 0) { gdsf->win_down++; gdsf->win_down_sum -= w * g; }
+        double log_rho_before = gdsf->log_rho;
         gdsf->log_rho += gdsf->eta *w *g;
+        double log_rho_unclamped = gdsf->log_rho;
         gdsf->log_rho = std::clamp(gdsf->log_rho, log(gdsf->rho_min), log(gdsf->rho_max));
+        event_log_write(gdsf, "ghost_hit", req->obj_id, e.obj_size, -1, EV_NA, EV_NA, EV_NA,
+                        e.slack_norm, turns, s, g_raw, w, g, gdsf->log_rho - log_rho_before,
+                        exp(gdsf->log_rho), EV_NA, gdsf->log_rho != log_rho_unclamped);
+      } else {
+        event_log_write(gdsf, "ghost_hit", req->obj_id, e.obj_size, -1, EV_NA, EV_NA, EV_NA,
+                        e.slack_norm, turns, EV_NA, EV_NA, EV_NA, EV_NA, 0.0, gdsf->rho, EV_NA, 0);
       }
       ghost_erase(gdsf,it);
     }
@@ -311,7 +364,14 @@ static bool GDSF_GCA_get(cache_t *cache, const request_t *req) {
       double rho = gdsf->learn ? exp(gdsf->log_rho) : gdsf->rho; //rho update
       double delta = std::max(0.0, gdsf->max_evicted_key - gdsf->clock_base); //delta는 항상 0이상 -> clock이 항상 증가
       gdsf->clock = gdsf->clock_base + rho * delta; //clock update
+      //clock 갱신: key 칸에 MaxEvictedKey
+      event_log_write(gdsf, "clock", -1, -1, -1, gdsf->max_evicted_key, gdsf->clock_base,
+                      EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, rho, gdsf->clock, -1);
     }
+  } else if (!hit) {
+    //cache보다 큰 object: 넣지 않음
+    event_log_write(gdsf, "bypass", req->obj_id, req->obj_size, -1, EV_NA, EV_NA, EV_NA, EV_NA,
+                    EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, -1);
   }
 
   if (gdsf->rho_log != nullptr && cache->n_req % gdsf->rho_log_every == 0)
@@ -357,6 +417,10 @@ static cache_obj_t *GDSF_GCA_find(cache_t *cache, const request_t *req,
     eviction::pq_node_type new_node = {obj, pri, cache->n_req};
     gdsf->pq.insert(new_node);
     gdsf->pq_map[obj] = new_node;
+    gdsf->cur_req = cache->n_req;
+    event_log_write(gdsf, "hit", obj->obj_id, obj->obj_size, obj->freq, pri, EV_NA,
+                    gca_value(gdsf, obj->freq, obj->obj_size), EV_NA, EV_NA, EV_NA, EV_NA,
+                    EV_NA, EV_NA, EV_NA, EV_NA, gdsf->clock, -1);
   }
 
   return obj;
@@ -440,6 +504,10 @@ static cache_obj_t *GDSF_GCA_insert(cache_t *cache, const request_t *req) {
   auto r = gdsf->pq.insert(new_node);
   DEBUG_ASSERT(r.second);
   gdsf->pq_map[obj] = new_node;
+  // cache에 insert 사건 // freq(=1), K, V, clock 기록
+  event_log_write(gdsf, "insert", obj->obj_id, obj->obj_size, obj->freq, pri, EV_NA,
+                  gca_value(gdsf, obj->freq, obj->obj_size), EV_NA, EV_NA, EV_NA, EV_NA, EV_NA,
+                  EV_NA, EV_NA, EV_NA, gdsf->clock, -1);
 
   return obj;
 }
@@ -481,6 +549,9 @@ static void GDSF_GCA_evict(cache_t *cache, const request_t *req) {
   double V = gca_value(gdsf, p.obj->freq, p.obj->obj_size);
   //(p.priority - gdsf->clock_base) = V(p) − (그 뒤로 clock이 오른 양)
   double slack = (p.priority - gdsf->clock_base)/ (V+1e-12);
+  event_log_write(gdsf, "evict", p.obj->obj_id, p.obj->obj_size, p.obj->freq, p.priority,
+                  gdsf->clock_base, V, slack, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA,
+                  EV_NA, -1);
   ghost_insert(gdsf, p.obj->obj_id,
              {slack, gdsf->bytes_admitted, p.obj->obj_size});
 
