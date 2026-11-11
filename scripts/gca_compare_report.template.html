@@ -123,7 +123,7 @@ code { font-family: var(--f-data); font-size: 0.92em; }
         <button type="button" data-v="bmr" aria-pressed="false">Byte miss ratio</button>
       </div>
     </div>
-    <div class="ctl"><span class="label">GDSF-GCA β</span>
+    <div class="ctl"><span class="label">GDSF-GCA γ</span>
       <div class="seg" id="seg-beta"></div>
     </div>
   </div>
@@ -138,8 +138,8 @@ code { font-family: var(--f-data); font-size: 0.92em; }
   </section>
 
   <section>
-    <h2>β별 비교: V(o) = freq · c / size<sup>β</sup></h2>
-    <p>β마다 최적 ρ를 따로 골랐을 때, GDSF-GCA가 가장 좋은 기존 온라인 알고리즘보다 얼마나 좋은지입니다. β=1은 지금까지의 GDSF-GCA, β=0은 크기를 보지 않는 freq · c(ρ=1이면 LFUDA, ρ=0이면 LFU와 같은 순서)입니다. 굵은 행이 위에서 고른 β이고, 각 열에서 가장 좋은 β에 테두리를 그렸습니다.</p>
+    <h2>γ별 비교: V(o) = freq · c / size<sup>γ</sup></h2>
+    <p>γ마다 최적 ρ를 따로 골랐을 때, GDSF-GCA가 가장 좋은 기존 온라인 알고리즘보다 얼마나 좋은지입니다. γ=1은 지금까지의 GDSF-GCA, γ=0은 크기를 보지 않는 freq · c(ρ=1이면 LFUDA, ρ=0이면 LFU와 같은 순서)입니다. 굵은 행이 위에서 고른 γ이고, 각 열에서 가장 좋은 γ에 테두리를 그렸습니다.</p>
     <div class="tablewrap"><table id="t-beta"></table></div>
   </section>
 
@@ -245,8 +245,9 @@ for (const name of traceNames) {
     configs.get(r.config).v[r.frac] = { mr: r.mr, bmr: r.bmr };
   }
   const all = [...configs.values()].filter((c) => S.every((s) => c.v[s]));
-  // fixed-rho configs only; learn=1 runs have no rho= in the label
-  const gcaAll = all.filter((c) => c.algo.toLowerCase() === "gdsf-gca" && /rho=/.test(c.name))
+  // fixed-rho configs only; learn=1 runs have no rho= in the label.
+  // cost=latency runs are a different V(o) and are left out so they do not mix into the γ=1 group
+  const gcaAll = all.filter((c) => c.algo.toLowerCase() === "gdsf-gca" && /rho=/.test(c.name) && !/cost=latency/.test(c.name))
     .sort((a, b) => parseFloat(rhoOf(a)) - parseFloat(rhoOf(b)));
   const others = all.filter((c) => !c.offline && c.algo.toLowerCase() !== "gdsf-gca");
   TR[name] = {
@@ -256,9 +257,10 @@ for (const name of traceNames) {
     nreq: null,
   };
 }
-// config label: gdsf-gca(rho=R) for beta=1, gdsf-gca(rho=R,beta=B) otherwise
+// config label: gdsf-gca(rho=R) for gamma=1, gdsf-gca(rho=R,gamma=G) otherwise
+// (gamma was called beta before; old CSVs still say beta=)
 function rhoOf(c) { return c.name.match(/rho=([^,)]+)/)[1]; }
-function betaOf(c) { const b = c.name.match(/beta=([^,)]+)/); return b ? b[1] : "1"; }
+function betaOf(c) { const b = c.name.match(/(?:gamma|(?<![-\w])beta)=([^,)]+)/); return b ? b[1] : "1"; }
 const RHOS = [...new Set(Object.values(TR).flatMap((t) => t.gcaAll.map(rhoOf)))].sort((a, b) => parseFloat(a) - parseFloat(b));
 const BETAS = [...new Set(Object.values(TR).flatMap((t) => t.gcaAll.map(betaOf)))].sort((a, b) => parseFloat(a) - parseFloat(b));
 const gcaFor = (T, b) => T.gcaAll.filter((c) => parseFloat(betaOf(c)) === parseFloat(b));
@@ -380,7 +382,7 @@ function drawBeta() {
   const t = $("t-beta"); t.replaceChildren();
   const n = FRACS.length;
   const head = el("tr", null, null, el("thead", null, null, t));
-  el("th", "name", "trace · β", head);
+  el("th", "name", "trace · γ", head);
   for (let i = 0; i < n; i++) el("th", null, fracLabel(FRACS[i]), head);
   el("th", null, "평균", head); el("th", null, "최악", head);
   const tb = el("tbody", null, null, t);
@@ -391,13 +393,13 @@ function drawBeta() {
     const colBest = ms[0].S.map((_, i) => Math.max(...gains.map((g) => g[i] ?? -Infinity)));
     ms.forEach((M, k) => {
       const tr = el("tr", M.b === beta ? "hl" : null, null, tb);
-      el("td", "name", `${M.T.short} · β=${M.b}`, tr);
+      el("td", "name", `${M.T.short} · γ=${M.b}`, tr);
       M.S.forEach((s, i) => {
         const g = gains[k][i];
         const td = el("td", ms.length > 1 && g >= colBest[i] - 1e-9 ? "best" : null, pct(g, 1), tr);
         el("small", null, tieLabel(M.oracle[i].ties), td);
         td.style.background = divColor(g, 10);
-        td.title = `${M.T.short} · β=${M.b} · ${M.T.sizeLabel[s]}\nGCA ${M.oracle[i].v.toFixed(4)} (${tieLabel(M.oracle[i].ties)})\n기존 최고 ${M.bestOther[i].c.name} ${M.bestOther[i].v.toFixed(4)}`;
+        td.title = `${M.T.short} · γ=${M.b} · ${M.T.sizeLabel[s]}\nGCA ${M.oracle[i].v.toFixed(4)} (${tieLabel(M.oracle[i].ties)})\n기존 최고 ${M.bestOther[i].c.name} ${M.bestOther[i].v.toFixed(4)}`;
       });
       el("td", null, pct(mean(gains[k]), 1), tr);
       el("td", Math.min(...gains[k]) < 0 ? "neg" : "pos", pct(Math.min(...gains[k]), 1), tr);
@@ -520,7 +522,7 @@ function drawCurve(M) {
   if (M.off) series.push({ id: "off", name: "오프라인 기준 (Belady)", short: "Belady", color: "--muted", ys: M.off, dash: "5 4", w: 1.5 });
   series.push({ id: "best", name: "가장 좋은 기존 알고리즘", short: "기존 최고", color: "--s4", ys: M.bestOther.map((b) => b.v), w: 2 });
   if (T.gdsf) series.push({ id: "gdsf", name: "GDSF", short: "GDSF", color: "--s3", ys: S.map((s) => M.val(T.gdsf, s)), w: 2 });
-  series.push({ id: "fixed", name: `GDSF-GCA (β=${M.b}, ρ=${rhoOf(M.fixed)} 고정)`, short: `GCA ρ=${rhoOf(M.fixed)}`, color: "--s2", ys: S.map((s) => M.val(M.fixed, s)), w: 2 });
+  series.push({ id: "fixed", name: `GDSF-GCA (γ=${M.b}, ρ=${rhoOf(M.fixed)} 고정)`, short: `GCA ρ=${rhoOf(M.fixed)}`, color: "--s2", ys: S.map((s) => M.val(M.fixed, s)), w: 2 });
   series.push({ id: "oracle", name: GCA_ORACLE, short: "GCA 최적 ρ", color: "--s1", ys: M.oracle.map((o) => o.v), w: 2.5 });
   for (const sr of series) {
     const c = `var(${sr.color})`;
@@ -604,7 +606,7 @@ function drawRank(M) {
   const T = M.T, S = M.S;
   const ents = T.others.map((c) => ({ name: c.name, ys: S.map((s) => M.val(c, s)), hl: c === T.gdsf }));
   ents.push({ name: GCA_ORACLE, ys: M.oracle.map((o) => o.v), hl: true, sub: M.oracle.map((o) => tieLabel(o.ties)) });
-  ents.push({ name: `GDSF-GCA (β=${M.b}, ρ=${rhoOf(M.fixed)} 고정)`, ys: S.map((s) => M.val(M.fixed, s)), hl: true });
+  ents.push({ name: `GDSF-GCA (γ=${M.b}, ρ=${rhoOf(M.fixed)} 고정)`, ys: S.map((s) => M.val(M.fixed, s)), hl: true });
   const best = S.map((_, i) => Math.min(...ents.map((e) => e.ys[i])));
   for (const e of ents) {
     e.ranks = e.ys.map((v, i) => 1 + ents.filter((o) => o.ys[i] < v - 1e-12).length);
@@ -674,7 +676,7 @@ try { const b = localStorage.getItem("gca-beta"); if (b && BETAS.includes(b)) be
 
 function setPressed(segId, v) { for (const b of $(segId).querySelectorAll("button")) b.setAttribute("aria-pressed", b.dataset.v === v); }
 function renderAll() {
-  GCA_ORACLE = `GDSF-GCA (β=${beta}, 크기별 최적 ρ)`;
+  GCA_ORACLE = `GDSF-GCA (γ=${beta}, 크기별 최적 ρ)`;
   const Ms = traceNames.map((n) => model(TR[n], metric, beta)).filter((M) => M.S.length && M.T.gcaCfgs.length && M.T.others.length);
   setPressed("seg-metric", metric); setPressed("seg-beta", beta);
   drawTiles(Ms); drawSummary(Ms); drawBeta(); drawRange(Ms); drawHist(Ms);
@@ -691,7 +693,7 @@ for (const n of traceNames) {
   b.addEventListener("click", () => { trace = n; try { localStorage.setItem("gca-trace", n); } catch (e) {} renderTrace(); });
 }
 for (const v of BETAS) {
-  const b = el("button", null, "β=" + v, $("seg-beta")); b.type = "button"; b.dataset.v = v;
+  const b = el("button", null, "γ=" + v, $("seg-beta")); b.type = "button"; b.dataset.v = v;
   b.addEventListener("click", () => { beta = v; try { localStorage.setItem("gca-beta", v); } catch (e) {} renderAll(); });
 }
 for (const b of $("seg-metric").querySelectorAll("button"))
@@ -700,15 +702,15 @@ for (const b of $("seg-metric").querySelectorAll("button"))
 $("h1").textContent = document.title;
 $("cur-range").textContent = `ρ_min=${CUR_RANGE[0]}, ρ_max=${CUR_RANGE[1]}`;
 const anyT = TR[traceNames[0]];
-$("lede").textContent = `GDSF-GCA의 ρ를 ${RHOS.length}개 값, β를 ${BETAS.length}개 값으로 고정해 돌리고, trace ${traceNames.length}개 × 캐시 크기 ${FRACS.length}개 조합에서 ${anyT ? anyT.others.map((c) => c.name).join(", ") : ""}와 비교했습니다. ρ 학습이 완벽하다고 가정했을 때 GDSF-GCA가 모든 조합에서 안정적으로 이기는지, 그리고 ρ 범위를 어디로 잡아야 하는지를 보기 위한 결과입니다.`;
-$("meta").textContent = `trace ${traceNames.map((n) => TR[n].short).join(", ")} · 캐시 크기 ${FRACS.map(fracLabel).join(", ")} (working set 대비) · ρ ${RHOS.join(", ")} · β ${BETAS.join(", ")}`;
+$("lede").textContent = `GDSF-GCA의 ρ를 ${RHOS.length}개 값, γ를 ${BETAS.length}개 값으로 고정해 돌리고, trace ${traceNames.length}개 × 캐시 크기 ${FRACS.length}개 조합에서 ${anyT ? anyT.others.map((c) => c.name).join(", ") : ""}와 비교했습니다. ρ 학습이 완벽하다고 가정했을 때 GDSF-GCA가 모든 조합에서 안정적으로 이기는지, 그리고 ρ 범위를 어디로 잡아야 하는지를 보기 위한 결과입니다.`;
+$("meta").textContent = `trace ${traceNames.map((n) => TR[n].short).join(", ")} · 캐시 크기 ${FRACS.map(fracLabel).join(", ")} (working set 대비) · ρ ${RHOS.join(", ")} · γ ${BETAS.join(", ")}`;
 const notes = [
   "‘최적 ρ’는 각 trace·캐시 크기마다 결과를 보고 가장 좋은 고정 ρ를 고른 값입니다. ρ 학습이 완벽할 때 얻을 수 있는 상한선이고, 실제 학습이 그대로 달성한다는 뜻은 아닙니다. 또한 trace 안에서 워크로드가 바뀌면 시간에 따라 ρ를 바꾸는 학습이 고정 ρ보다 더 좋을 수도 있습니다.",
   "‘ρ 고정’은 한 trace 안의 모든 캐시 크기에 같은 ρ 하나를 쓴 경우입니다. 기존 최고 알고리즘 대비 평균 비율이 가장 낮은 ρ를 지표별로 골랐습니다.",
   "‘가장 좋은 기존 알고리즘’은 크기마다 다른 알고리즘일 수 있습니다. 하나의 기존 알고리즘이 모든 크기에서 그만큼 잘하는 것은 아니므로 GDSF-GCA에게 불리한 비교입니다.",
   "GDSF도 기존 알고리즘에 포함됩니다. ρ=1이 GDSF와 같기 때문에, 1을 포함하는 ρ 범위에서는 GDSF-GCA가 GDSF보다 나빠질 수 없습니다.",
   "Belady / BeladySize는 미래 요청을 아는 오프라인 알고리즘이라 순위와 ‘기존 최고’ 계산에서 빼고 기준선으로만 그렸습니다. 크기가 다른 객체에서는 BeladySize도 진짜 최적은 아닙니다.",
-  "β는 V(o) = freq · c / size^β의 지수입니다. 위쪽 요약, ρ 범위, trace별 그림은 상단에서 고른 β의 결과만 씁니다. β끼리의 비교는 ‘β별 비교’ 표에 있습니다.",
+  "γ는 V(o) = freq · c / size^γ의 지수입니다. 위쪽 요약, ρ 범위, trace별 그림은 상단에서 고른 γ의 결과만 씁니다. γ끼리의 비교는 ‘γ별 비교’ 표에 있습니다.",
   "모든 알고리즘의 파라미터는 libCacheSim 기본값입니다. 캐시 크기는 각 trace의 working set 크기(바이트) 대비 비율입니다.",
 ];
 for (const n of traceNames) for (const [name, status] of TR[n].failed) notes.push(`${TR[n].short} · ${name}: ${status}`);

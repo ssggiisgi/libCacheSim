@@ -33,10 +33,17 @@ class GDSF_GCA : public abstractRank {
   int64_t bytes_admitted = 0; //전역 시간 역할
   bool learn=false; //false이면 rho 고정 (테스트용)
   //eta : 학습률
-  //beta : V(o) 계산에 size(o) 영향 정도 조정
-  //       V(o) = freq(o) * c / size(o)^beta
+  //V(o) = freq(o) * cost(o) / size(o)^gamma
+  //  gamma : size 지수 (1: size로 나눔, 0: size 무시)
+  //  cost  : uniform이면 c0 = 1e6, latency이면 L(o) = lat_alpha + lat_beta * size(MiB) [ms]
+  //  -> 초안의 V_OHR(식 3) = uniform, gamma=1 / V_BHR(식 4) = uniform, gamma=0
+  //     V_Latency(식 5) = latency, gamma=1
   double eta = 0.05, w_mem = 1.0, w_burst = 0.25, w_res = 1.0;
-  double beta = 1.0; // V(o) = freq * c / size^beta (1: OHR, 0: BHR)
+  double gamma = 1.0;
+  bool latency_cost = false;
+  //cloud download latency 모델 (LARA 논문 식 1, cloud-olap-cache-experiments의 GDSF-Latency와 같은 상수)
+  double lat_alpha = 46.73;  //ms, 요청당 고정 지연
+  double lat_beta = 12.30;   //ms/MiB, 전송 지연
   double rho_min = 1e-6, rho_max = 4.0, ghost_ratio = 1.0;
 
 
@@ -121,7 +128,17 @@ static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
     else if (strcasecmp(key, "rho-min") == 0)     gdsf->rho_min = strtod(value, nullptr);
     else if (strcasecmp(key, "rho-max") == 0)     gdsf->rho_max = strtod(value, nullptr);
     else if (strcasecmp(key, "ghost-ratio") == 0) gdsf->ghost_ratio = strtod(value, nullptr);
-    else if (strcasecmp(key, "beta") ==0)         gdsf->beta = strtod(value, nullptr);
+    else if (strcasecmp(key, "gamma") == 0)       gdsf->gamma = strtod(value, nullptr);
+    else if (strcasecmp(key, "cost") == 0) {
+      if      (strcasecmp(value, "uniform") == 0) gdsf->latency_cost = false;
+      else if (strcasecmp(value, "latency") == 0) gdsf->latency_cost = true;
+      else { ERROR("GDSF_GCA: cost must be uniform or latency, got %s\n", value); }
+    }
+    else if (strcasecmp(key, "lat-alpha") == 0)   gdsf->lat_alpha = strtod(value, nullptr);
+    else if (strcasecmp(key, "lat-beta") == 0)    gdsf->lat_beta = strtod(value, nullptr);
+    else if (strcasecmp(key, "beta") == 0) {
+      ERROR("GDSF_GCA: beta (size 지수) was renamed to gamma\n");
+    }
     else if (strcasecmp(key, "rho-log") == 0)     gdsf->rho_log_prefix = value;
     else if (strcasecmp(key, "rho-log-every") == 0) gdsf->rho_log_every = atoll(value);
     else if (strcasecmp(key, "event-log") == 0)   gdsf->event_log_prefix = value;
@@ -140,8 +157,10 @@ static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
   }
   if (gdsf->eta < 0 || gdsf->w_mem <= 0 || gdsf->w_burst <= 0 || gdsf->ghost_ratio < 0)
     ERROR("GDSF_GCA: invalid eta / w-mem / w-burst / ghost-ratio\n");
-  if (gdsf->beta <0)
-    ERROR("GDSF_GCA: beta must be >= 0\n");
+  if (gdsf->gamma < 0)
+    ERROR("GDSF_GCA: gamma must be >= 0\n");
+  if (gdsf->lat_alpha < 0 || gdsf->lat_beta < 0 || gdsf->lat_alpha + gdsf->lat_beta <= 0)
+    ERROR("GDSF_GCA: need lat-alpha >= 0, lat-beta >= 0, not both 0\n");
   if (gdsf->rho_log_every <= 0)
     ERROR("GDSF_GCA: rho-log-every must be > 0\n");
 }
@@ -205,9 +224,13 @@ static void ghost_insert(eviction::GDSF_GCA *g, obj_id_t id, const eviction::gho
 //gca_value V(o) 
 ////////////////////////////////
 static inline double gca_value(const eviction::GDSF_GCA *g, int64_t freq, int64_t size){
-  if (g->beta == 1.0) return (double)freq * 1.0e6 / size; //OHR
-  if (g->beta == 0.0) return (double)freq * 1.0e6;  //BHR
-  return (double)freq * 1.0e6 / pow((double)size, g->beta);
+  //cost(o): uniform이면 c0 = 1e6, latency이면 L(o) [ms]
+  double cost = g->latency_cost
+                    ? g->lat_alpha + g->lat_beta * ((double)size / 1024 / 1024)
+                    : 1.0e6;
+  if (g->gamma == 1.0) return (double)freq * cost / size;  //OHR, Latency
+  if (g->gamma == 0.0) return (double)freq * cost;         //BHR
+  return (double)freq * cost / pow((double)size, g->gamma);
 }
 //////////////////////////////
 //rho log: 구간 통계 한 줄 쓰고 초기화

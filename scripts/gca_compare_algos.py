@@ -36,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 # the comparison set for GDSF-GCA (gdsf-gca itself is added from --rhos)
 DEFAULT_ALGOS = "lru,arc,lfu,gdsf,gdsize,cacheus,lecar,belady,beladySize"
 DEFAULT_RHOS = "0,1e-6,1e-5,1e-4,1e-3,0.01,0.1,1,4,16"
-DEFAULT_BETAS = "0,0.5,1"
+DEFAULT_GAMMAS = "0,0.5,1"
 OFFLINE = {"belady", "beladysize"}
 
 # <trace> <ALGO-NAME> cache size <label>, <n> req, miss ratio <mr>, byte miss ratio <bmr>
@@ -95,7 +95,8 @@ def main():
     ap.add_argument("--trace", required=True, help='"PATH|TYPE" or "PATH|TYPE|TRACE_PARAMS"')
     ap.add_argument("--algos", default=DEFAULT_ALGOS)
     ap.add_argument("--rhos", default=DEFAULT_RHOS, help="fixed rho values for gdsf-gca")
-    ap.add_argument("--betas", default=DEFAULT_BETAS, help="beta values for gdsf-gca")
+    ap.add_argument("--gammas", default=DEFAULT_GAMMAS,
+                    help="size exponent gamma values for gdsf-gca: V = freq * cost / size^gamma")
     ap.add_argument("--gca-configs", default="",
                     help='extra gdsf-gca configs separated by ";", e.g. "learn=1;learn=1,eta=0.1"')
     ap.add_argument("--rho-log-dir", default="",
@@ -131,11 +132,11 @@ def main():
               "size_frac", "miss_ratio", "byte_miss_ratio"]
     ##캐시 크기 별로
     n_sizes = len(args.sizes.split(","))
-    ##베타 크기 * rho 별로
-    betas = [b.strip() for b in args.betas.split(",") if b.strip()]
-    for b in betas:
+    ##gamma(size 지수) * rho 별로
+    gammas = [g.strip() for g in args.gammas.split(",") if g.strip()]
+    for b in gammas:
         for r in (r.strip() for r in args.rhos.split(",") if r.strip()):
-            eparams = f"rho={r}" if float(b) == 1.0 else f"rho={r},beta={b}"
+            eparams = f"rho={r}" if float(b) == 1.0 else f"rho={r},gamma={b}"
             jobs.append(("gdsf-gca", eparams, f"gdsf-gca({eparams})"))
     ##추가 gdsf-gca config (학습 등)
     for e in (e.strip() for e in args.gca_configs.split(";") if e.strip()):
