@@ -213,7 +213,8 @@ static void event_log_write(eviction::GDSF_GCA *g, const char *event, int64_t ob
 //ghost insert
 //////////////////////////////
 static void ghost_insert(eviction::GDSF_GCA *g, obj_id_t id, const eviction::ghost_entry &e){
-  //이미 ghost에 있으면 먼저 제거 <- 이런 경우가 있을 수가 있나????
+  //이미 ghost에 있으면 먼저 제거. cachesim에서는 일어나지 않는다: 캐시에 들어오는 길(get의 miss)이
+  //삽입 전에 ghost entry를 지우므로 캐시에 있는 id는 ghost에 없다. insert를 직접 부르는 경우 대비
   auto old = g->ghost_map.find(id);
   if (old != g->ghost_map.end()) ghost_erase(g, old);
 
