@@ -15,7 +15,7 @@ struct ghost_entry {
   double slack_norm;
   int64_t bytes_admitted_at_evict;
   int64_t obj_size;
-  int64_t fr_evict;  //축출될 때의 freq (resurrection용, 식 14)
+  double fr_evict;   //축출될 때의 freq (resurrection용, 식 14). freq-real=1이면 실수일 수 있다
 };
 
 class GDSF_GCA : public abstractRank {
@@ -51,6 +51,22 @@ class GDSF_GCA : public abstractRank {
   //  freq0 = round(1 + exp(-turns / w_res) * fr_evict), 기본값 끔, learn과 독립
   bool resurrect = false;
   int64_t pending_freq0 = 1;  //get()의 ghost hit에서 계산, 바로 다음 insert()에서 사용 후 1로 되돌림
+
+  //pin (pin=1): LARA 시뮬레이터와 같은 규칙. 접근(삽입, hit)마다 pin 수 +1, GDSF_GCA_unpin()마다 -1.
+  //  pin된 object는 축출하지 않는다. unpin은 외부 driver(bin/pinsim)가 부른다.
+  //freq-real=1 (실험용, 기본 꺼짐): 식 (14)의 freq0를 반올림하지 않는다
+  //  (실수 freq, 소수 부분은 freq_frac에 보관하고 hit은 +1)
+  bool freq_real = false;
+  //evict-first=1 (실험용, 기본 꺼짐): miss에서 먼저 축출하고, 축출로 갱신된 clock으로 새 object를 넣는다.
+  //  LARA 시뮬레이터(cloud-olap-cache-experiments)의 GDSF와 같은 순서. 기본은 삽입 후 축출
+  bool evict_first = false;
+  std::unordered_map<obj_id_t, double> freq_frac;
+  double pending_frac = 0;
+
+  bool pin_mode = false;
+  std::unordered_map<obj_id_t, int32_t> pin_count;  //pin 수 > 0인 object만
+  bool evict_blocked = false;   //evict()가 pin되지 않은 victim을 못 찾음
+  int64_t n_evict_blocked = 0;  //그래서 축출을 멈추고 용량을 넘긴 채 삽입한 횟수
 
 
 
@@ -133,6 +149,9 @@ static void GDSF_GCA_parse_params(cache_t *cache, const char *params) {
     else if (strcasecmp(key, "w-burst") == 0)     gdsf->w_burst = strtod(value, nullptr);
     else if (strcasecmp(key, "w-res") == 0)       gdsf->w_res = strtod(value, nullptr);
     else if (strcasecmp(key, "resurrect") == 0)   gdsf->resurrect = (atoi(value) != 0);
+    else if (strcasecmp(key, "pin") == 0)         gdsf->pin_mode = (atoi(value) != 0);
+    else if (strcasecmp(key, "freq-real") == 0)   gdsf->freq_real = (atoi(value) != 0);
+    else if (strcasecmp(key, "evict-first") == 0) gdsf->evict_first = (atoi(value) != 0);
     else if (strcasecmp(key, "rho-min") == 0)     gdsf->rho_min = strtod(value, nullptr);
     else if (strcasecmp(key, "rho-max") == 0)     gdsf->rho_max = strtod(value, nullptr);
     else if (strcasecmp(key, "ghost-ratio") == 0) gdsf->ghost_ratio = strtod(value, nullptr);
@@ -234,7 +253,7 @@ static void ghost_insert(eviction::GDSF_GCA *g, obj_id_t id, const eviction::gho
 ////////////////////////////////
 //gca_value V(o) 
 ////////////////////////////////
-static inline double gca_value(const eviction::GDSF_GCA *g, int64_t freq, int64_t size){
+static inline double gca_value(const eviction::GDSF_GCA *g, double freq, int64_t size){
   //cost(o): uniform이면 c0 = 1e6, latency이면 L(o) [ms]
   double cost = g->latency_cost
                     ? g->lat_alpha + g->lat_beta * ((double)size / 1024 / 1024)
@@ -242,6 +261,13 @@ static inline double gca_value(const eviction::GDSF_GCA *g, int64_t freq, int64_
   if (g->gamma == 1.0) return (double)freq * cost / size;  //OHR, Latency
   if (g->gamma == 0.0) return (double)freq * cost;         //BHR
   return (double)freq * cost / pow((double)size, g->gamma);
+}
+
+//object의 freq. freq-real=1이면 resurrection의 소수 부분을 더한다
+static inline double eff_freq(const eviction::GDSF_GCA *g, const cache_obj_t *obj){
+  if (!g->freq_real) return (double)obj->freq;
+  auto it = g->freq_frac.find(obj->obj_id);
+  return (double)obj->freq + (it == g->freq_frac.end() ? 0.0 : it->second);
 }
 //////////////////////////////
 //rho log: 구간 통계 한 줄 쓰고 초기화
@@ -381,30 +407,48 @@ static bool GDSF_GCA_get(cache_t *cache, const request_t *req) {
                         e.slack_norm, turns, EV_NA, EV_NA, EV_NA, EV_NA, 0.0, gdsf->rho, EV_NA, 0);
       }
       //resurrection: 금방 돌아올수록 축출 당시 freq를 많이 돌려줌 (식 14, 반올림)
-      if (gdsf->resurrect)
-        gdsf->pending_freq0 = std::max<int64_t>(
-            1, llround(1.0 + exp(-turns / gdsf->w_res) * (double)e.fr_evict));
+      if (gdsf->resurrect) {
+        double f0 = 1.0 + exp(-turns / gdsf->w_res) * e.fr_evict;
+        if (gdsf->freq_real) {  //식 (14) 그대로: 정수 부분은 obj->freq, 소수 부분은 freq_frac
+          gdsf->pending_freq0 = (int64_t)floor(f0);
+          gdsf->pending_frac = f0 - floor(f0);
+        } else {
+          gdsf->pending_freq0 = std::max<int64_t>(1, llround(f0));
+        }
+      }
       ghost_erase(gdsf,it);
     }
-    cache->insert(cache, req);
-
-    //episode begin
-    gdsf->clock_base = gdsf->clock;
-    gdsf->n_evicted_in_epi = 0;
-    while (cache->get_occupied_byte(cache) > cache->cache_size) {
-      cache->evict(cache, req);
-    }
-    //episode end
-
-    //cache에서 evict X -> rho, clock 변화X
-    //         evict O -> rho, clock 변화O
-    if (gdsf->n_evicted_in_epi > 0){
-      double rho = gdsf->learn ? exp(gdsf->log_rho) : gdsf->rho; //rho update
-      double delta = std::max(0.0, gdsf->max_evicted_key - gdsf->clock_base); //delta는 항상 0이상 -> clock이 항상 증가
-      gdsf->clock = gdsf->clock_base + rho * delta; //clock update
-      //clock 갱신: key 칸에 MaxEvictedKey
-      event_log_write(gdsf, "clock", -1, -1, -1, gdsf->max_evicted_key, gdsf->clock_base,
-                      EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, rho, gdsf->clock, -1);
+    //축출 episode: incoming만큼 자리가 날 때까지 축출하고, 끝나면 clock을 한 번 갱신한다
+    auto episode = [&](int64_t incoming) {
+      gdsf->clock_base = gdsf->clock;
+      gdsf->n_evicted_in_epi = 0;
+      gdsf->evict_blocked = false;
+      while (cache->get_occupied_byte(cache) + incoming > cache->cache_size) {
+        cache->evict(cache, req);
+        if (gdsf->evict_blocked) {  //남은 object가 모두 pin됨: 용량을 넘긴 채 둔다
+          gdsf->n_evict_blocked++;
+          event_log_write(gdsf, "evict_blocked", req->obj_id, req->obj_size, -1, EV_NA, EV_NA,
+                          EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, -1);
+          break;
+        }
+      }
+      //cache에서 evict X -> rho, clock 변화X
+      //         evict O -> rho, clock 변화O
+      if (gdsf->n_evicted_in_epi > 0){
+        double rho = gdsf->learn ? exp(gdsf->log_rho) : gdsf->rho; //rho update
+        double delta = std::max(0.0, gdsf->max_evicted_key - gdsf->clock_base); //delta는 항상 0이상 -> clock이 항상 증가
+        gdsf->clock = gdsf->clock_base + rho * delta; //clock update
+        //clock 갱신: key 칸에 MaxEvictedKey
+        event_log_write(gdsf, "clock", -1, -1, -1, gdsf->max_evicted_key, gdsf->clock_base,
+                        EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, rho, gdsf->clock, -1);
+      }
+    };
+    if (gdsf->evict_first) {  //먼저 축출하고 갱신된 clock으로 삽입 (LARA 시뮬레이터와 같은 순서)
+      episode(req->obj_size);
+      cache->insert(cache, req);
+    } else {                  //삽입한 뒤 축출 (기본, libCacheSim GDSF와 같은 순서)
+      cache->insert(cache, req);
+      episode(0);
     }
   } else if (!hit) {
     //cache보다 큰 object: 넣지 않음
@@ -446,18 +490,19 @@ static cache_obj_t *GDSF_GCA_find(cache_t *cache, const request_t *req,
   /* this does not consider object size change */
   if (obj != nullptr && update_cache) {
     /* frequency is updated in cache_find_base */
+    if (gdsf->pin_mode) gdsf->pin_count[obj->obj_id]++;
 
     auto node = gdsf->pq_map[obj];
     gdsf->pq.erase(node);
 
     double pri =
-        gdsf->clock + gca_value(gdsf, obj->freq, obj->obj_size);
+        gdsf->clock + gca_value(gdsf, eff_freq(gdsf, obj), obj->obj_size);
     eviction::pq_node_type new_node = {obj, pri, cache->n_req};
     gdsf->pq.insert(new_node);
     gdsf->pq_map[obj] = new_node;
     gdsf->cur_req = cache->n_req;
     event_log_write(gdsf, "hit", obj->obj_id, obj->obj_size, obj->freq, pri, EV_NA,
-                    gca_value(gdsf, obj->freq, obj->obj_size), EV_NA, EV_NA, EV_NA, EV_NA,
+                    gca_value(gdsf, eff_freq(gdsf, obj), obj->obj_size), EV_NA, EV_NA, EV_NA, EV_NA,
                     EV_NA, EV_NA, EV_NA, EV_NA, gdsf->clock, -1);
   }
 
@@ -535,17 +580,20 @@ static cache_obj_t *GDSF_GCA_insert(cache_t *cache, const request_t *req) {
   cache_obj_t *obj = cache_insert_base(cache, req);
   DEBUG_ASSERT(obj != nullptr);
   obj->freq = gdsf->pending_freq0;  //보통 1, resurrect=1이고 ghost hit이었으면 freq0
+  if (gdsf->pending_frac > 0) gdsf->freq_frac[obj->obj_id] = gdsf->pending_frac;
+  gdsf->pending_frac = 0;
   gdsf->pending_freq0 = 1;
   gdsf->bytes_admitted += obj->obj_size;
+  if (gdsf->pin_mode) gdsf->pin_count[obj->obj_id] = 1;
 
-  double pri = gdsf->clock + gca_value(gdsf, obj->freq, obj->obj_size);
+  double pri = gdsf->clock + gca_value(gdsf, eff_freq(gdsf, obj), obj->obj_size);
   eviction::pq_node_type new_node = {obj, pri, cache->n_req};
   auto r = gdsf->pq.insert(new_node);
   DEBUG_ASSERT(r.second);
   gdsf->pq_map[obj] = new_node;
   // cache에 insert 사건 // freq(=1), K, V, clock 기록
   event_log_write(gdsf, "insert", obj->obj_id, obj->obj_size, obj->freq, pri, EV_NA,
-                  gca_value(gdsf, obj->freq, obj->obj_size), EV_NA, EV_NA, EV_NA, EV_NA, EV_NA,
+                  gca_value(gdsf, eff_freq(gdsf, obj), obj->obj_size), EV_NA, EV_NA, EV_NA, EV_NA, EV_NA,
                   EV_NA, EV_NA, EV_NA, gdsf->clock, -1);
 
   return obj;
@@ -578,21 +626,36 @@ static cache_obj_t *GDSF_GCA_to_evict(cache_t *cache, const request_t *req) {
  */
 static void GDSF_GCA_evict(cache_t *cache, const request_t *req) {
   auto *gdsf = reinterpret_cast<eviction::GDSF_GCA *>(cache->eviction_params);
-  eviction::pq_node_type p = gdsf->pop_lowest_score(); //victim 축출
+  eviction::pq_node_type p;
+  if (!gdsf->pin_mode) {
+    p = gdsf->pop_lowest_score(); //victim 축출
+  } else {  //K가 가장 작은 object부터 보면서 pin되지 않은 첫 object를 축출
+    auto it = gdsf->pq.begin();
+    while (it != gdsf->pq.end() && gdsf->pin_count.count(it->obj->obj_id)) ++it;
+    if (it == gdsf->pq.end()) {
+      gdsf->evict_blocked = true;
+      return;
+    }
+    p = *it;
+    gdsf->pq_map.erase(it->obj);
+    gdsf->pq.erase(it);
+  }
   // episode내에서 max_evicted_key 값, 총 victim 수 갱신
   if(gdsf->n_evicted_in_epi ==0 || p.priority > gdsf->max_evicted_key){
     gdsf-> max_evicted_key = p.priority;
   }
   gdsf->n_evicted_in_epi ++ ;
 
-  double V = gca_value(gdsf, p.obj->freq, p.obj->obj_size);
+  double fr = eff_freq(gdsf, p.obj);
+  double V = gca_value(gdsf, fr, p.obj->obj_size);
   //(p.priority - gdsf->clock_base) = V(p) − (그 뒤로 clock이 오른 양)
   double slack = (p.priority - gdsf->clock_base)/ (V+1e-12);
   event_log_write(gdsf, "evict", p.obj->obj_id, p.obj->obj_size, p.obj->freq, p.priority,
                   gdsf->clock_base, V, slack, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA, EV_NA,
                   EV_NA, -1);
   ghost_insert(gdsf, p.obj->obj_id,
-             {slack, gdsf->bytes_admitted, p.obj->obj_size, p.obj->freq});
+             {slack, gdsf->bytes_admitted, p.obj->obj_size, fr});
+  if (gdsf->freq_real) gdsf->freq_frac.erase(p.obj->obj_id);
 
   cache_remove_obj_base(cache, p.obj, true); //cache에서 삭제
 }
@@ -618,6 +681,24 @@ static void GDSF_GCA_remove_obj(cache_t *cache, cache_obj_t *obj) {
 static bool GDSF_GCA_remove(cache_t *cache, obj_id_t obj_id) {
   auto *gdsf = reinterpret_cast<eviction::GDSF_GCA *>(cache->eviction_params);
   return gdsf->remove(cache, obj_id);
+}
+
+/**
+ * @brief pin=1에서 외부 driver(bin/pinsim)가 trace의 unpin 사건마다 부른다.
+ * object의 pin 수를 1 줄이고, 0이 되면 다시 축출 후보가 된다.
+ * pin되지 않은 object를 unpin하면 trace나 driver가 잘못된 것이므로 멈춘다.
+ */
+void GDSF_GCA_unpin(cache_t *cache, obj_id_t obj_id) {
+  auto *gdsf = reinterpret_cast<eviction::GDSF_GCA *>(cache->eviction_params);
+  auto it = gdsf->pin_count.find(obj_id);
+  if (!gdsf->pin_mode || it == gdsf->pin_count.end())
+    ERROR("GDSF_GCA: unpin of object %llu that is not pinned\n", (unsigned long long)obj_id);
+  if (--it->second == 0) gdsf->pin_count.erase(it);
+}
+
+/** @brief 남은 object가 모두 pin되어 용량을 넘긴 채 삽입한 횟수 (pin=1) */
+int64_t GDSF_GCA_n_evict_blocked(const cache_t *cache) {
+  return reinterpret_cast<const eviction::GDSF_GCA *>(cache->eviction_params)->n_evict_blocked;
 }
 
 

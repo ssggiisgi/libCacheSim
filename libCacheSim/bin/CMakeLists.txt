@@ -4,6 +4,7 @@
 
 add_subdirectory(MRC)
 add_subdirectory(cachesim)
+add_subdirectory(pinsim)
 add_subdirectory(distUtil)
 add_subdirectory(traceUtils)
 add_subdirectory(traceAnalyzer)
